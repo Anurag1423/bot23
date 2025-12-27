@@ -10,6 +10,7 @@ import signal
 import threading
 import time
 import uuid
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
@@ -197,25 +198,57 @@ except Exception:
 
 
 def parse_vol_ch(text):
-    text = text.lower().replace("vol.", "v").replace("ch.", "c")
-    v = None
-    c = None
-    for part in text.split():
-        if part.startswith("v"):
-            try:
-                v = int(part[1:])
-            except:
-                pass
-        if part.startswith("c"):
-            try:
-                c = int(part[1:])
-            except:
-                pass
-    return (v, c) if c else None
+    if not text:
+        return None
+
+    t = (
+        str(text)
+        .lower()
+        .replace("volume", "v")
+        .replace("vol.", "v")
+        .replace("vol", "v")
+        .replace("chapter", "c")
+        .replace("ch.", "c")
+        .replace("ch", "c")
+    )
+
+    # Common patterns:
+    # - v3c91
+    # - v3 c91
+    # - v 3 c 91
+    # - c91
+    m = re.search(r"\bv\s*(\d+)\s*c\s*(\d+)\b", t, re.IGNORECASE)
+    if m:
+        try:
+            return (int(m.group(1)), int(m.group(2)))
+        except Exception:
+            return None
+
+    m = re.search(r"\bc\s*(\d+)\b", t, re.IGNORECASE)
+    if m:
+        try:
+            return (0, int(m.group(1)))
+        except Exception:
+            return None
+
+    return None
 
 
 def crawl_fenrir_chapters(sb, url):
     sb.open(url)
+    try:
+        sb.execute_script(
+            """
+            try {
+              localStorage.setItem('discord_modal_disabled', 'true');
+              // Some builds may store as a booleanish JSON value.
+              localStorage.setItem('discord_modal_disabled_v2', JSON.stringify(true));
+            } catch (e) {}
+            """
+        )
+        sb.refresh()
+    except Exception:
+        pass
     time.sleep(2)
 
     def _parse_from_href(href):
@@ -235,14 +268,46 @@ def crawl_fenrir_chapters(sb, url):
     chapters = set()
     selectors = [
         'div[role="tabpanel"][data-value="free"] a.btn-chapter',
+        'div.grid-chapter a.btn-chapter',
         'a.btn-chapter',
-        'a[href*="/series/"][href*="/"]',
     ]
 
     try:
-        # Load more content if infinite/virtual list
-        for _ in range(6):
-            sb.execute_script("window.scrollBy(0, 8000);")
+        sb.wait_for_element("a.btn-chapter", timeout=15)
+    except Exception:
+        pass
+
+    try:
+        # Best-effort: remove common modal/backdrop overlays if they exist.
+        sb.execute_script(
+            """
+            const selectors = [
+              '[role="dialog"]',
+              '.modal',
+              '.modal-backdrop',
+              '.backdrop',
+              '.overlay',
+            ];
+            for (const sel of selectors) {
+              document.querySelectorAll(sel).forEach(el => {
+                if (el && el.parentNode) el.parentNode.removeChild(el);
+              });
+            }
+            document.body.style.overflow = 'auto';
+            """
+        )
+    except Exception:
+        pass
+
+    try:
+        # Fenrir uses a scrollable chapter grid; scroll the container, not the window.
+        for _ in range(10):
+            sb.execute_script(
+                """
+                const el = document.querySelector('div.grid-chapter');
+                if (el) { el.scrollTop = el.scrollHeight; }
+                """
+            )
             time.sleep(0.35)
     except Exception:
         pass
@@ -277,8 +342,29 @@ def crawl_fenrir_chapters(sb, url):
     return chapters
 
 
-def crawl_nu_chapters(sb, url):
-    sb.open(url)
+def crawl_nu_chapters(sb, url, group_id=None):
+    final_url = url
+    try:
+        gid = str(group_id).strip() if group_id is not None else ""
+        if gid:
+            p = urlparse(url)
+            q = parse_qs(p.query)
+            q["pg"] = ["1"]
+            q["grp"] = [gid]
+            final_url = urlunparse(
+                (
+                    p.scheme,
+                    p.netloc,
+                    p.path,
+                    p.params,
+                    urlencode(q, doseq=True),
+                    p.fragment,
+                )
+            )
+    except Exception:
+        final_url = url
+
+    sb.open(final_url)
     time.sleep(2)
 
     chapters = set()
@@ -286,6 +372,38 @@ def crawl_nu_chapters(sb, url):
         sb.wait_for_ready_state_complete(timeout=10)
     except Exception:
         pass
+
+    # NU often hides the full chapter list behind a popup. Open it first.
+    try:
+        sb.execute_script(
+            """
+            if (typeof list_allchpstwo === 'function') {
+              try { list_allchpstwo(); } catch (e) {}
+            }
+            """
+        )
+    except Exception:
+        pass
+
+    try:
+        sb.wait_for_element_visible("#my_popupreading", timeout=8)
+        for s in sb.find_elements("#my_popupreading ol.sp_chp span[title]"):
+            t = (s.get_attribute("title") or "").strip()
+            parsed = parse_vol_ch(t)
+            if parsed:
+                chapters.add(parsed)
+    except Exception:
+        # Fallback: attempt clicking the popup open button
+        try:
+            sb.click(".my_popupreading_open")
+            sb.wait_for_element_visible("#my_popupreading", timeout=8)
+            for s in sb.find_elements("#my_popupreading ol.sp_chp span[title]"):
+                t = (s.get_attribute("title") or "").strip()
+                parsed = parse_vol_ch(t)
+                if parsed:
+                    chapters.add(parsed)
+        except Exception:
+            pass
 
     # Prefer releases table when present
     selectors = [
@@ -340,9 +458,10 @@ def submission_worker():
 
     while True:
         novel, vol, ch = submission_queue.get()
-        sb = browser.get_sb()
+        sb = None
 
         try:
+            sb = browser.get_sb()
             sb.open("https://www.novelupdates.com/add-release/")
             sb.wait_for_element("#arrelease", timeout=15)
 
@@ -538,6 +657,11 @@ def submission_worker():
                 )
             except Exception:
                 logger.error(f"❌ Submission failed: {e}")
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 # ------------------ API ------------------
@@ -589,7 +713,7 @@ def refresh(novel_id):
 
             TASKS[task_id]["progress"] = 55
             TASKS[task_id]["message"] = "Loading NovelUpdates..."
-            n = crawl_nu_chapters(sb, novel.nu_url)
+            n = crawl_nu_chapters(sb, novel.nu_url, group_id=getattr(novel, "nu_group_id", None))
 
             with app.app_context():
                 nobj = db.session.get(Novel, novel_id)
@@ -606,6 +730,11 @@ def refresh(novel_id):
         except Exception as e:
             TASKS[task_id]["status"] = "error"
             TASKS[task_id]["message"] = str(e)
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     threading.Thread(target=task, daemon=True).start()
     return jsonify({"task_id": task_id})
