@@ -76,3 +76,4 @@ Modern web application for tracking and managing novel chapters across Fenrir Re
 - The app uses headless mode for refreshing, but opens a visible browser for submissions
 
 "# bot23" 
+"# bot23" 
