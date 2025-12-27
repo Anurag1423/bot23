@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Novel Chapter Tracker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 Novel Chapter Tracker</h1>
+            <p class="subtitle">Manage and track novel chapters across Fenrir Realm and NovelUpdates</p>
+        </header>
+        
+
+        <!-- Add Novel Section -->
+        <section class="card add-novel-section">
+            <h2>➕ Add Novel to Watch</h2>
+            <form id="addNovelForm" class="form">
+                <div class="form-group">
+                    <label for="novelName">Novel Name</label>
+                    <input type="text" id="novelName" name="name" required placeholder="e.g., Kill the Emperor">
+                </div>
+                <div class="form-group">
+                    <label for="fenrirUrl">Fenrir Realm URL</label>
+                    <input type="url" id="fenrirUrl" name="fenrir_url" required 
+                           placeholder="https://fenrirealm.com/series/...">
+                </div>
+                <div class="form-group">
+                    <label for="nuUrl">NovelUpdates URL</label>
+                    <input type="url" id="nuUrl" name="nu_url" required 
+                           placeholder="https://www.novelupdates.com/series/...">
+                </div>
+                <div class="form-group">
+                    <label for="groupName">Group Name</label>
+                    <input type="text" id="groupName" name="group_name" value="Fenrir Realm" 
+                           placeholder="Translation group name">
+                </div>
+                <div class="form-group">
+                    <label for="nuSeriesId">NU Series ID</label>
+                    <input type="text" id="nuSeriesId" name="nu_series_id" placeholder="e.g., 102429">
+                </div>
+                <div class="form-group">
+                    <label for="nuGroupId">NU Group ID</label>
+                    <input type="text" id="nuGroupId" name="nu_group_id" placeholder="e.g., 78568">
+                </div>
+                <button type="submit" class="btn btn-primary">Add Novel</button>
+            </form>
+        </section>
+
+        <!-- Novels List -->
+        <section class="novels-section">
+            <h2>📖 Watched Novels</h2>
+            <div id="novelsList" class="novels-grid">
+                <div class="loading">Loading novels...</div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Modal for Missing Chapters -->
+    <div id="missingModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Missing Chapters</h2>
+                <button class="modal-close" onclick="closeMissingModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="missingChaptersList"></div>
+                <div id="missingChaptersActions" class="modal-actions"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast"></div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
+
