@@ -12,6 +12,8 @@ import time
 import uuid
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
+from selenium.common.exceptions import TimeoutException
+
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from flask_sqlalchemy import SQLAlchemy
@@ -178,7 +180,7 @@ class BrowserManager:
             return
 
         logger.info("🔑 Logging into NovelUpdates")
-        self.sb.open("https://www.novelupdates.com/login/")
+        fast_open(self.sb, "https://www.novelupdates.com/login/", timeout_seconds=8)
         # Don't wait for full load; NU pages can hang on ads/tracker scripts.
         try:
             self.sb.wait_for_element_visible("#user_login", timeout=10)
@@ -203,7 +205,7 @@ class BrowserManager:
             pass
 
         try:
-            self.sb.open("https://www.novelupdates.com/add-release/")
+            fast_open(self.sb, "https://www.novelupdates.com/add-release/", timeout_seconds=8)
             self.sb.wait_for_element("#arrelease", timeout=15)
         except Exception as e:
             logger.warning("⚠️ Post-login add-release not ready: %s", e)
@@ -283,8 +285,34 @@ def parse_vol_ch(text):
     return None
 
 
+def fast_open(sb, url, timeout_seconds=8):
+    try:
+        sb.driver.set_page_load_timeout(timeout_seconds)
+    except Exception:
+        pass
+
+    try:
+        sb.open(url)
+    except TimeoutException:
+        try:
+            sb.execute_script("try { window.stop(); } catch (e) {}")
+        except Exception:
+            pass
+    except Exception:
+        # Best-effort: don't block automation on navigation failures.
+        try:
+            sb.execute_script("try { window.stop(); } catch (e) {}")
+        except Exception:
+            pass
+
+    try:
+        sb.driver.set_page_load_timeout(60)
+    except Exception:
+        pass
+
+
 def crawl_fenrir_chapters(sb, url):
-    sb.open(url)
+    fast_open(sb, url, timeout_seconds=8)
     try:
         sb.execute_script(
             """
@@ -432,7 +460,7 @@ def crawl_nu_chapters(sb, url, group_id=None):
     except Exception:
         final_url = url
 
-    sb.open(final_url)
+    fast_open(sb, final_url, timeout_seconds=8)
     time.sleep(2)
 
     chapters = set()
@@ -538,7 +566,7 @@ def submission_worker():
                 raise Exception("Novel not found")
 
             sb = browser.get_sb()
-            sb.open("https://www.novelupdates.com/add-release/")
+            fast_open(sb, "https://www.novelupdates.com/add-release/", timeout_seconds=8)
             sb.wait_for_element("#arrelease", timeout=15)
 
             try:
@@ -899,6 +927,16 @@ def novels():
         return jsonify(n.to_dict()), 201
 
     return jsonify([n.to_dict() for n in Novel.query.all()])
+
+
+@app.route("/api/novels/<int:novel_id>", methods=["DELETE"])
+def delete_novel(novel_id):
+    novel = db.session.get(Novel, novel_id)
+    if not novel:
+        return jsonify({"error": "Novel not found"}), 404
+    db.session.delete(novel)
+    db.session.commit()
+    return jsonify({"deleted": True, "id": novel_id})
 
 
 @app.route("/api/novels/<int:novel_id>/refresh", methods=["POST"])
