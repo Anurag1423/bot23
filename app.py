@@ -3,7 +3,7 @@ import atexit
 import json
 import logging
 import os
-from queue import Queue
+from queue import Queue, Empty
 import random
 import re
 import signal
@@ -59,6 +59,7 @@ class Novel(db.Model):
     nu_series_id = db.Column(db.String(32))
     nu_group_id = db.Column(db.String(32))
     fenrir_chapters = db.Column(db.Text)
+    fenrir_links = db.Column(db.Text)
     nu_chapters = db.Column(db.Text)
     last_checked = db.Column(db.DateTime)
 
@@ -87,6 +88,8 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE novel ADD COLUMN nu_series_id VARCHAR(32)"))
         if "nu_group_id" not in cols:
             db.session.execute(db.text("ALTER TABLE novel ADD COLUMN nu_group_id VARCHAR(32)"))
+        if "fenrir_links" not in cols:
+            db.session.execute(db.text("ALTER TABLE novel ADD COLUMN fenrir_links TEXT"))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -113,8 +116,8 @@ class BrowserManager:
                 self.ctx = SB(
                     uc=True,
                     headless=False,
-                    ad_block_on=False,
-                    page_load_strategy="normal",
+                    ad_block_on=True,
+                    page_load_strategy="eager",
                 )
                 self.sb = self.ctx.__enter__()
 
@@ -129,6 +132,36 @@ class BrowserManager:
                             "*.webp",
                             "*.mp4",
                             "*.svg",
+                            "*doubleclick.net/*",
+                            "*googlesyndication.com/*",
+                            "*googleadservices.com/*",
+                            "*googletagservices.com/*",
+                            "*googletagmanager.com/*",
+                            "*google-analytics.com/*",
+                            "*analytics.google.com/*",
+                            "*adsystem.com/*",
+                            "*adservice.google.com/*",
+                            "*amazon-adsystem.com/*",
+                            "*taboola.com/*",
+                            "*outbrain.com/*",
+                            "*scorecardresearch.com/*",
+                            "*quantserve.com/*",
+                            "*zedo.com/*",
+                            "*criteo.com/*",
+                            "*criteo.net/*",
+                            "*adsrvr.org/*",
+                            "*pubmatic.com/*",
+                            "*openx.net/*",
+                            "*rubiconproject.com/*",
+                            "*yieldmo.com/*",
+                            "*moatads.com/*",
+                            "*serving-sys.com/*",
+                            "*adnxs.com/*",
+                            "*facebook.net/*",
+                            "*connect.facebook.net/*",
+                            "*hotjar.com/*",
+                            "*datadoghq.com/*",
+                            "*clarity.ms/*",
                         ]
                     },
                 )
@@ -146,7 +179,11 @@ class BrowserManager:
 
         logger.info("🔑 Logging into NovelUpdates")
         self.sb.open("https://www.novelupdates.com/login/")
-        self.sb.wait_for_ready_state_complete(timeout=15)
+        # Don't wait for full load; NU pages can hang on ads/tracker scripts.
+        try:
+            self.sb.wait_for_element_visible("#user_login", timeout=10)
+        except Exception:
+            pass
 
         try:
             self.sb.wait_for_element_visible("#user_login", timeout=10)
@@ -158,7 +195,19 @@ class BrowserManager:
         self.sb.type("#user_pass", pw)
         self.sb.click("#wp-submit")
 
-        self.sb.wait_for_ready_state_complete(timeout=10)
+        # NU sometimes redirects to a slow/heavy homepage after login.
+        # Don't let that block the automation; go straight to Add Release.
+        try:
+            self.sb.execute_script("try { window.stop(); } catch (e) {}")
+        except Exception:
+            pass
+
+        try:
+            self.sb.open("https://www.novelupdates.com/add-release/")
+            self.sb.wait_for_element("#arrelease", timeout=15)
+        except Exception as e:
+            logger.warning("⚠️ Post-login add-release not ready: %s", e)
+
         logger.info("✅ Login attempt finished")
 
     def close(self):
@@ -254,7 +303,18 @@ def crawl_fenrir_chapters(sb, url):
     def _parse_from_href(href):
         if not href:
             return None
-        # Common patterns: /<num> or /chapter-<num> or ?chapter=<num>
+        # Common patterns:
+        # - /vol-3/1
+        # - /<num>
+        # - /chapter-<num>
+        # - ?chapter=<num>
+        m = re.search(r"/vol-(\d{1,5})/(\d{1,5})(?:/|$)", href, re.IGNORECASE)
+        if m:
+            try:
+                return (int(m.group(1)), int(m.group(2)))
+            except Exception:
+                return None
+
         m = re.search(r"(?:chapter[-_/]|/)(\d{1,5})(?:/|$)", href, re.IGNORECASE)
         if not m:
             m = re.search(r"[?&]chapter=(\d{1,5})\b", href, re.IGNORECASE)
@@ -266,6 +326,7 @@ def crawl_fenrir_chapters(sb, url):
         return None
 
     chapters = set()
+    links = {}
     selectors = [
         'div[role="tabpanel"][data-value="free"] a.btn-chapter',
         'div.grid-chapter a.btn-chapter',
@@ -324,6 +385,13 @@ def crawl_fenrir_chapters(sb, url):
                     parsed = _parse_from_href(href)
                 if parsed:
                     chapters.add(parsed)
+                    try:
+                        v, c = parsed
+                        key = f"{int(v or 0)}:{int(c)}"
+                        if href and key not in links:
+                            links[key] = href
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -339,7 +407,7 @@ def crawl_fenrir_chapters(sb, url):
             pass
 
     logger.info("📚 Fenrir chapters: %s", len(chapters))
-    return chapters
+    return chapters, links
 
 
 def crawl_nu_chapters(sb, url, group_id=None):
@@ -368,10 +436,7 @@ def crawl_nu_chapters(sb, url, group_id=None):
     time.sleep(2)
 
     chapters = set()
-    try:
-        sb.wait_for_ready_state_complete(timeout=10)
-    except Exception:
-        pass
+    # Avoid waiting for full load; we'll wait for the popup/required selectors instead.
 
     # NU often hides the full chapter list behind a popup. Open it first.
     try:
@@ -457,10 +522,21 @@ def submission_worker():
     logger.info("🤖 Submission worker started (idle)")
 
     while True:
-        novel, vol, ch = submission_queue.get()
+        # Keep a single logged-in browser session alive while draining the queue.
+        # Do not auto-close on idle because refresh and submit share the same browser.
+        try:
+            novel_id, vol, ch = submission_queue.get(timeout=20)
+        except Empty:
+            continue
+
         sb = None
 
         try:
+            with app.app_context():
+                novel = db.session.get(Novel, novel_id)
+            if not novel:
+                raise Exception("Novel not found")
+
             sb = browser.get_sb()
             sb.open("https://www.novelupdates.com/add-release/")
             sb.wait_for_element("#arrelease", timeout=15)
@@ -573,50 +649,135 @@ def submission_worker():
                 return
 
             if getattr(novel, "nu_series_id", None):
-                sb.execute_script(
+                logger.info(
+                    "🧩 Injecting NU series id=%r name=%r",
+                    str(novel.nu_series_id),
+                    novel.name,
+                )
+                injected = sb.execute_script(
                     """
-                    const seriesId = arguments[0];
-                    const seriesName = arguments[1];
-                    const hid = document.querySelector('#title100');
+                    const seriesId = String(arguments[0] || '').trim();
+                    const seriesName = String(arguments[1] || '').trim();
+
+                    const form = document.querySelector('form') || document.body;
+
+                    let hid = document.querySelector('#title100');
+                    if (!hid) {
+                      hid = document.createElement('input');
+                      hid.type = 'hidden';
+                      hid.id = 'title100';
+                      hid.name = 'title100';
+                      form.appendChild(hid);
+                    }
+
                     const txt = document.querySelector('#title_change_100');
-                    if (hid) hid.value = seriesId;
-                    if (txt) txt.value = seriesName;
+                    if (hid) {
+                      hid.value = seriesId;
+                      hid.setAttribute('value', seriesId);
+                      hid.dispatchEvent(new Event('input', { bubbles: true }));
+                      hid.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (txt) {
+                      txt.value = seriesName;
+                      txt.setAttribute('value', seriesName);
+                      txt.dispatchEvent(new Event('input', { bubbles: true }));
+                      txt.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+
+                    return {
+                      title_id: (document.querySelector('#title100')?.value || '').trim(),
+                      title_txt: (document.querySelector('#title_change_100')?.value || '').trim(),
+                      title_exists: !!document.querySelector('#title100'),
+                    };
                     """,
                     str(novel.nu_series_id),
                     novel.name,
                 )
+                if not injected or str(injected.get("title_id", "")).strip() != str(novel.nu_series_id).strip():
+                    raise Exception(
+                        f"Series ID injection failed: expected={novel.nu_series_id!r} got={injected!r}"
+                    )
             else:
                 _wait_results_then_type("#title_change_100", "livesearch", "series", novel.name)
 
             release = f"v{vol}c{ch}" if vol else f"c{ch}"
-            link = f"{novel.fenrir_url.rstrip('/')}/{ch}"
+            link = ""
+            try:
+                links_map = json.loads(novel.fenrir_links or "{}")
+                key = f"{int(vol or 0)}:{int(ch)}"
+                link = str(links_map.get(key) or "").strip()
+            except Exception:
+                link = ""
+            if not link:
+                if vol:
+                    link = f"{novel.fenrir_url.rstrip('/')}/vol-{int(vol)}/{ch}"
+                else:
+                    link = f"{novel.fenrir_url.rstrip('/')}/{ch}"
 
             _set_value("#arrelease", release)
             _set_value("#arlink", link)
 
             if getattr(novel, "nu_group_id", None):
-                sb.execute_script(
+                logger.info(
+                    "🧩 Injecting NU group id=%r name=%r",
+                    str(novel.nu_group_id),
+                    novel.group_name,
+                )
+                injected = sb.execute_script(
                     """
-                    const groupId = arguments[0];
-                    const groupName = arguments[1];
-                    const hid = document.querySelector('#group100');
+                    const groupId = String(arguments[0] || '').trim();
+                    const groupName = String(arguments[1] || '').trim();
+
+                    const form = document.querySelector('form') || document.body;
+
+                    let hid = document.querySelector('#group100');
+                    if (!hid) {
+                      hid = document.createElement('input');
+                      hid.type = 'hidden';
+                      hid.id = 'group100';
+                      hid.name = 'group100';
+                      form.appendChild(hid);
+                    }
+
                     const txt = document.querySelector('#group_change_100');
-                    if (hid) hid.value = groupId;
-                    if (txt) txt.value = groupName;
+                    if (hid) {
+                      hid.value = groupId;
+                      hid.setAttribute('value', groupId);
+                      hid.dispatchEvent(new Event('input', { bubbles: true }));
+                      hid.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (txt) {
+                      txt.value = groupName;
+                      txt.setAttribute('value', groupName);
+                      txt.dispatchEvent(new Event('input', { bubbles: true }));
+                      txt.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+
+                    return {
+                      group_id: (document.querySelector('#group100')?.value || '').trim(),
+                      group_txt: (document.querySelector('#group_change_100')?.value || '').trim(),
+                      group_exists: !!document.querySelector('#group100'),
+                    };
                     """,
                     str(novel.nu_group_id),
                     novel.group_name,
                 )
+                if not injected or str(injected.get("group_id", "")).strip() != str(novel.nu_group_id).strip():
+                    raise Exception(
+                        f"Group ID injection failed: expected={novel.nu_group_id!r} got={injected!r}"
+                    )
             else:
                 _wait_results_then_type("#group_change_100", "livesearchgroup", "group", novel.group_name)
 
             title_val = _get_value("#title_change_100").strip()
             group_val = _get_value("#group_change_100").strip()
+            title_id_val = _get_value("#title100").strip()
+            group_id_val = _get_value("#group100").strip()
             arrelease_val = _get_value("#arrelease").strip()
             arlink_val = _get_value("#arlink").strip()
-            if not title_val:
+            if not (title_val or title_id_val):
                 raise Exception("Missing Series")
-            if not group_val:
+            if not (group_val or group_id_val):
                 raise Exception("Missing Group")
             if not arrelease_val:
                 raise Exception("Release field empty")
@@ -624,9 +785,58 @@ def submission_worker():
                 raise Exception("Link field empty")
 
             sb.click("#submit")
+
+            # Don't wait for full page load; NU can keep loading ads.
+            time.sleep(1.2)
+
+            cur_url = ""
+            try:
+                cur_url = sb.get_current_url() or ""
+            except Exception:
+                cur_url = ""
+
+            page_text_after = ""
+            try:
+                page_text_after = (sb.get_text("body") or "").strip()
+            except Exception:
+                page_text_after = ""
+
+            page_lower = page_text_after.lower()
+            looks_like_error = any(
+                x in page_lower
+                for x in [
+                    "error",
+                    "errors were found",
+                    "please select",
+                    "please enter",
+                    "required field",
+                    "invalid",
+                    "too many requests",
+                    "429",
+                ]
+            )
+
+            # Heuristics: NU typically navigates away or shows a confirmation.
+            # If we still appear to be on the add-release page and see error keywords, treat as failure.
+            still_on_form = "add-release" in (cur_url or "") or ("add release" in page_lower)
+            looks_like_success = (
+                (cur_url and "add-release" not in cur_url)
+                or ("thank" in page_lower and "submit" in page_lower)
+                or ("success" in page_lower)
+                or ("release" in page_lower and "added" in page_lower)
+            )
+
+            if looks_like_error and still_on_form:
+                snippet = page_text_after[:600].replace("\n", " ")
+                raise Exception(f"NU rejected submission (on form): {snippet}")
+
+            if not looks_like_success and still_on_form:
+                snippet = page_text_after[:600].replace("\n", " ")
+                raise Exception(f"NU submission not confirmed (still on form): {snippet}")
+
             logger.info(f"✅ Submitted {novel.name} {release}")
 
-            time.sleep(random.randint(180, 300))
+            time.sleep(random.uniform(2.0, 4.0))
 
         except Exception as e:
             if "rate limited (429)" in str(e).lower() or "too many requests" in str(e).lower():
@@ -659,7 +869,7 @@ def submission_worker():
                 logger.error(f"❌ Submission failed: {e}")
         finally:
             try:
-                browser.close()
+                submission_queue.task_done()
             except Exception:
                 pass
 
@@ -709,7 +919,7 @@ def refresh(novel_id):
             TASKS[task_id]["progress"] = 10
             TASKS[task_id]["message"] = "Loading Fenrir..."
             sb = browser.get_sb()
-            f = crawl_fenrir_chapters(sb, novel.fenrir_url)
+            f, flinks = crawl_fenrir_chapters(sb, novel.fenrir_url)
 
             TASKS[task_id]["progress"] = 55
             TASKS[task_id]["message"] = "Loading NovelUpdates..."
@@ -720,6 +930,10 @@ def refresh(novel_id):
                 if not nobj:
                     raise Exception("Novel not found")
                 nobj.fenrir_chapters = json.dumps(list(f))
+                try:
+                    nobj.fenrir_links = json.dumps(flinks)
+                except Exception:
+                    nobj.fenrir_links = json.dumps({})
                 nobj.nu_chapters = json.dumps(list(n))
                 nobj.last_checked = datetime.now(timezone.utc)
                 db.session.commit()
@@ -730,11 +944,6 @@ def refresh(novel_id):
         except Exception as e:
             TASKS[task_id]["status"] = "error"
             TASKS[task_id]["message"] = str(e)
-        finally:
-            try:
-                browser.close()
-            except Exception:
-                pass
 
     threading.Thread(target=task, daemon=True).start()
     return jsonify({"task_id": task_id})
@@ -765,7 +974,7 @@ def submit(novel_id):
     data = request.json
 
     for c in data["chapters"]:
-        submission_queue.put((novel, c.get("vol"), c["ch"]))
+        submission_queue.put((novel_id, c.get("vol"), c["ch"]))
 
     return jsonify({"queued": len(data["chapters"])})
 

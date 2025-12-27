@@ -58,15 +58,15 @@ function renderNovels() {
                     </div>
                 </div>
                 <div class="novel-actions">
-                    <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">🗑️</button>
+                    <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">Delete</button>
                 </div>
             </div>
             <div class="card-buttons">
                 <button class="btn btn-primary" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">
-                    🔄 Refresh Chapters
+                    Refresh Chapters
                 </button>
                 <button class="btn btn-success" onclick="viewMissing(${novel.id})">
-                    📋 View Missing
+                    View Missing
                 </button>
 
                 <div id="progress-${novel.id}" style="display:none;margin-top:10px;">
@@ -193,7 +193,7 @@ async function refreshNovel(id) {
             if (s.status === 'completed' || s.status === 'error') {
                 clearInterval(poll);
                 btn.disabled = false;
-                btn.textContent = '🔄 Refresh Chapters';
+                btn.textContent = 'Refresh Chapters';
                 progress.style.display = 'none';
                 loadNovels();
             }
@@ -228,7 +228,7 @@ async function viewMissing(novelId) {
     }
 
     if (data.count === 0) {
-        listDiv.innerHTML = "✅ Synced!";
+        listDiv.innerHTML = "Synced!";
     } else {
         const missing = Array.isArray(data.missing) ? data.missing.slice() : [];
         missing.sort((a, b) => {
@@ -238,27 +238,121 @@ async function viewMissing(novelId) {
             return Number(a.ch) - Number(b.ch);
         });
 
-        const summary = `<div style="margin-bottom:12px;color:var(--text-muted);">Missing: <strong>${data.count}</strong></div>`;
-        const items = missing.map(m => {
-            const vol = Number(m.vol || 0);
-            const ch = Number(m.ch);
-            return `<div class="chapter-item"><span class="chapter-name">V${vol} C${ch}</span></div>`;
-        }).join('');
-        listDiv.innerHTML = `${summary}<div class="chapters-list">${items}</div>`;
-        
-        const btn = document.createElement('button');
-        btn.className = 'btn btn-primary';
-        btn.innerText = `Submit ${data.count}`;
-        btn.onclick = async () => {
+        const parseStart = (raw) => {
+            const s = String(raw || '').trim().toLowerCase().replace(/\s+/g, '');
+            if (!s) return null;
+            let m = s.match(/^v(\d+)c(\d+)$/i);
+            if (m) return { vol: Number(m[1]), ch: Number(m[2]) };
+            m = s.match(/^c(\d+)$/i);
+            if (m) return { vol: 0, ch: Number(m[1]) };
+            return null;
+        };
+
+        const isAtOrAfter = (item, start) => {
+            if (!start) return true;
+            const v = Number(item.vol || 0);
+            const c = Number(item.ch);
+            if (v > Number(start.vol || 0)) return true;
+            if (v < Number(start.vol || 0)) return false;
+            return c >= Number(start.ch);
+        };
+
+        let filteredMissing = missing.slice();
+
+        const render = () => {
+            const startVal = document.getElementById(`startFrom-${novelId}`)?.value || '';
+            const startParsed = parseStart(startVal);
+            filteredMissing = missing.filter(m => isAtOrAfter(m, startParsed));
+
+            const summary = `<div style="margin-bottom:12px;color:var(--text-muted);">Missing: <strong>${data.count}</strong></div>`;
+            const controls = `
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">
+                    <label style="color:var(--text-muted);">Start from</label>
+                    <input id="startFrom-${novelId}" value="${escapeHtml(String(startVal))}" placeholder="v2c78 or c32" style="flex:1;" />
+                </div>
+            `;
+
+            const items = filteredMissing.map((m, idx) => {
+                const vol = Number(m.vol || 0);
+                const ch = Number(m.ch);
+                const label = vol > 0 ? `V${vol} C${ch}` : `C${ch}`;
+                const id = `miss-${novelId}-${idx}`;
+                return `
+                    <label class="chapter-item" for="${id}" style="display:flex;align-items:center;gap:10px;">
+                        <input type="checkbox" id="${id}" class="missing-chk" data-idx="${idx}" checked />
+                        <span class="chapter-name">${label}</span>
+                    </label>
+                `;
+            }).join('');
+            listDiv.innerHTML = `${summary}${controls}<div class="chapters-list">${items}</div>`;
+
+            const startEl = document.getElementById(`startFrom-${novelId}`);
+            if (startEl) {
+                startEl.addEventListener('input', () => {
+                    render();
+                });
+            }
+
+            document.querySelectorAll('#missingChaptersList .missing-chk').forEach(c => {
+                c.addEventListener('change', updateSubmitLabel);
+            });
+
+            updateSubmitLabel();
+        };
+
+        const getSelected = () => {
+            const checks = Array.from(document.querySelectorAll('#missingChaptersList .missing-chk'));
+            const selectedIdx = checks
+                .filter(c => c.checked)
+                .map(c => Number(c.dataset.idx))
+                .filter(n => Number.isFinite(n));
+            return selectedIdx.map(i => filteredMissing[i]).filter(Boolean);
+        };
+
+        const updateSubmitLabel = () => {
+            const selected = getSelected();
+            submitBtn.innerText = `Submit Selected (${selected.length})`;
+            submitBtn.disabled = selected.length === 0;
+        };
+
+        const selectAllBtn = document.createElement('button');
+        selectAllBtn.className = 'btn btn-secondary';
+        selectAllBtn.innerText = 'Select All';
+
+        const selectNoneBtn = document.createElement('button');
+        selectNoneBtn.className = 'btn btn-secondary';
+        selectNoneBtn.innerText = 'Select None';
+
+        const submitBtn = document.createElement('button');
+        submitBtn.className = 'btn btn-primary';
+
+        selectAllBtn.onclick = () => {
+            document.querySelectorAll('#missingChaptersList .missing-chk').forEach(c => { c.checked = true; });
+            updateSubmitLabel();
+        };
+
+        selectNoneBtn.onclick = () => {
+            document.querySelectorAll('#missingChaptersList .missing-chk').forEach(c => { c.checked = false; });
+            updateSubmitLabel();
+        };
+
+        submitBtn.onclick = async () => {
+            const selected = getSelected();
+            if (selected.length === 0) return;
             await fetch(`/api/novels/${novelId}/submit`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({chapters: data.missing})
+                body: JSON.stringify({chapters: selected})
             });
             alert("Submitted!");
             closeMissingModal();
         };
-        actionsDiv.appendChild(btn);
+
+        actionsDiv.appendChild(selectAllBtn);
+        actionsDiv.appendChild(selectNoneBtn);
+        actionsDiv.appendChild(submitBtn);
+
+        render();
     }
 }
 /* =========================
