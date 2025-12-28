@@ -117,7 +117,7 @@ class BrowserManager:
                 logger.info("🌐 Launching browser")
                 self.ctx = SB(
                     uc=True,
-                    headless=False,
+                    headless="new",
                     ad_block_on=True,
                     page_load_strategy="eager",
                 )
