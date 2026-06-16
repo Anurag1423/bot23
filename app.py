@@ -1299,7 +1299,7 @@ Promise.all(urls.map(function(url) {
                             group_name="Fenrir Realm",
                             nu_series_id=sid,
                             nu_group_id="78568",
-                            status=novel_status,
+                            status="active",
                         )
                         db.session.add(n)
                         added += 1
