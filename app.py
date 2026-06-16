@@ -1017,6 +1017,14 @@ def refresh(novel_id):
             TASKS[task_id]["message"] = "Loading NovelUpdates..."
             n = crawl_nu_chapters(sb, novel.nu_url, group_id=getattr(novel, "nu_group_id", None))
 
+            # Extract series ID from the NU page we just visited (free — no extra request)
+            series_id = None
+            if not getattr(novel, "nu_series_id", None):
+                try:
+                    series_id = extract_nu_series_id(sb)
+                except Exception:
+                    pass
+
             with app.app_context():
                 nobj = db.session.get(Novel, novel_id)
                 if not nobj:
@@ -1028,6 +1036,8 @@ def refresh(novel_id):
                     nobj.fenrir_links = json.dumps({})
                 nobj.nu_chapters = json.dumps(list(n))
                 nobj.last_checked = datetime.now(timezone.utc)
+                if series_id:
+                    nobj.nu_series_id = series_id
                 db.session.commit()
 
             TASKS[task_id]["progress"] = 100
@@ -1085,42 +1095,24 @@ def sync_fenrir():
 
             total = len(records)
             logger.info("📋 Found %d novels on Fenrir Realm group page", total)
-            TASKS[task_id]["message"] = f"Found {total} novels. Fetching series IDs..."
-            TASKS[task_id]["progress"] = 10
+            TASKS[task_id]["message"] = f"Found {total} novels. Saving..."
+            TASKS[task_id]["progress"] = 20
 
             added = 0
             skipped = 0
 
-            for idx, (title, nu_url) in enumerate(records):
-                pct = 10 + int(85 * (idx / total))
-                TASKS[task_id]["progress"] = pct
-                TASKS[task_id]["message"] = f"Processing {idx + 1}/{total}: {title}"
+            # ── Step 3: Upsert all novels using only info from the group page ──
+            # Series IDs are fetched lazily when the user triggers Refresh on each novel.
+            with app.app_context():
+                for idx, (title, nu_url) in enumerate(records):
+                    if nu_url.startswith("/"):
+                        nu_url = "https://www.novelupdates.com" + nu_url
 
-                # Build Fenrir URL from title slug
-                slug = title_to_fenrir_slug(title)
-                fenrir_url = f"https://fenrirealm.com/series/{slug}"
+                    slug = title_to_fenrir_slug(title)
+                    fenrir_url = f"https://fenrirealm.com/series/{slug}"
 
-                # Normalise the NU URL to ensure it's absolute
-                if nu_url.startswith("/"):
-                    nu_url = "https://www.novelupdates.com" + nu_url
-
-                # Visit NU novel page to extract series ID
-                series_id = None
-                try:
-                    fast_open(sb, nu_url, timeout_seconds=10)
-                    time.sleep(1.5)
-                    series_id = extract_nu_series_id(sb)
-                except Exception as e:
-                    logger.warning("Could not get series ID for %r: %s", title, e)
-
-                # Upsert into DB (skip if same NU URL already exists)
-                with app.app_context():
                     existing = Novel.query.filter_by(nu_url=nu_url).first()
                     if existing:
-                        # Update series_id if we now have it and didn't before
-                        if series_id and not existing.nu_series_id:
-                            existing.nu_series_id = series_id
-                            db.session.commit()
                         skipped += 1
                     else:
                         n = Novel(
@@ -1128,17 +1120,23 @@ def sync_fenrir():
                             fenrir_url=fenrir_url,
                             nu_url=nu_url,
                             group_name="Fenrir Realm",
-                            nu_series_id=series_id,
+                            nu_series_id=None,
                             nu_group_id="78568",
                         )
                         db.session.add(n)
-                        db.session.commit()
                         added += 1
-                        logger.info("✅ Added: %s | fenrir=%s | series_id=%s", title, fenrir_url, series_id)
+
+                    if idx % 100 == 0:
+                        db.session.commit()
+                        pct = 20 + int(75 * (idx / total))
+                        TASKS[task_id]["progress"] = pct
+                        TASKS[task_id]["message"] = f"Saving {idx + 1}/{total}..."
+
+                db.session.commit()
 
             TASKS[task_id]["progress"] = 100
             TASKS[task_id]["status"] = "completed"
-            TASKS[task_id]["message"] = f"Done! Added {added} new, skipped {skipped} existing."
+            TASKS[task_id]["message"] = f"Done! Added {added} new, skipped {skipped} existing. Series IDs will be fetched on first Refresh."
 
         except Exception as e:
             logger.error("sync-fenrir task error: %s", e)
