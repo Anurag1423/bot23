@@ -1099,21 +1099,6 @@ def sync_fenrir():
             total = len(records)
             logger.info("📋 Found %d novels on Fenrir Realm group page", total)
 
-            # ── Step 3: Grab browser cookies/UA so parallel requests bypass Cloudflare ──
-            try:
-                cookies = {c["name"]: c["value"] for c in sb.driver.get_cookies()}
-                user_agent = sb.execute_script("return navigator.userAgent;") or ""
-            except Exception:
-                cookies = {}
-                user_agent = "Mozilla/5.0"
-
-            headers = {
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Connection": "keep-alive",
-            }
-
             # Normalize URLs
             normalized = []
             for title, nu_url in records:
@@ -1121,66 +1106,72 @@ def sync_fenrir():
                     nu_url = "https://www.novelupdates.com" + nu_url
                 normalized.append((title, nu_url))
 
-            # ── Step 4: Fetch series IDs in parallel via requests (reusing Cloudflare cookies) ──
-            TASKS[task_id]["message"] = f"Found {total} novels. Fetching series IDs in parallel..."
+            # ── Step 3: Batch-fetch all NU novel pages from inside the browser ──
+            # Running fetch() from within the browser carries login cookies + Cloudflare
+            # fingerprint automatically. Each batch fires up to BATCH_SIZE requests in
+            # parallel; we call execute_async_script once per batch and wait for all.
+            TASKS[task_id]["message"] = f"Found {total} novels. Fetching info in batches..."
             TASKS[task_id]["progress"] = 8
 
-            # Maps nu_url -> (series_id, fenrir_url)
-            result_map = {}
+            BATCH_SIZE = 20
+            result_map = {}  # nu_url -> (series_id, fenrir_url)
+
+            try:
+                sb.driver.set_script_timeout(120)
+            except Exception:
+                pass
+
+            # JS that fires all URLs in the batch concurrently and returns results
+            _BATCH_JS = """
+var urls = arguments[0];
+var callback = arguments[arguments.length - 1];
+Promise.all(urls.map(function(url) {
+    return fetch(url, {credentials: 'include'})
+        .then(function(r) { return r.text(); })
+        .then(function(html) {
+            var sidPats = [
+                /id="mypostid"\\s+value="(\\d+)"/i,
+                /\\bpostid-(\\d+)\\b/,
+                /\\bseries_id['"]?\\s*[:=]\\s*['"]?(\\d+)/i,
+                /\\bpost_id['"]?\\s*[:=]\\s*['"]?(\\d+)/i
+            ];
+            var sid = null;
+            for (var i = 0; i < sidPats.length; i++) {
+                var m = sidPats[i].exec(html);
+                if (m) { sid = m[1]; break; }
+            }
+            var fenrirSlug = null;
+            var fm = /https?:\\/\\/(?:www\\.)?fenrirealm\\.com\\/series\\/([a-z0-9][a-z0-9\\-]*)/i.exec(html);
+            if (fm) { fenrirSlug = fm[1].toLowerCase(); }
+            return {url: url, sid: sid, fenrir_slug: fenrirSlug};
+        })
+        .catch(function() { return {url: url, sid: null, fenrir_slug: null}; });
+})).then(callback);
+"""
+
+            batches = [normalized[i:i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
             done_count = 0
-            lock = threading.Lock()
 
-            _sid_patterns = [
-                re.compile(r'id="mypostid"\s+value="(\d+)"', re.IGNORECASE),
-                re.compile(r"\bpostid-(\d+)\b"),
-                re.compile(r"\bseries_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
-                re.compile(r"\bpost_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
-            ]
-            # Match any fenrirealm.com/series/<slug> link; capture the slug
-            _fenrir_pat = re.compile(
-                r'https?://(?:www\.)?fenrirealm\.com/series/([a-z0-9][a-z0-9\-]*[a-z0-9])',
-                re.IGNORECASE,
-            )
-
-            def fetch_novel_info(args):
-                nonlocal done_count
-                title, nu_url = args
-                sid = None
-                fenrir_url = None
+            for batch in batches:
+                batch_urls = [nu_url for _, nu_url in batch]
                 try:
-                    resp = req_lib.get(
-                        nu_url, cookies=cookies, headers=headers,
-                        timeout=12, allow_redirects=True,
-                    )
-                    html = resp.text
+                    results = sb.driver.execute_async_script(_BATCH_JS, batch_urls)
+                    for r in (results or []):
+                        slug = r.get("fenrir_slug")
+                        result_map[r["url"]] = (
+                            r.get("sid"),
+                            f"https://fenrirealm.com/series/{slug}" if slug else None,
+                        )
+                except Exception as e:
+                    logger.warning("Batch fetch error: %s", e)
+                    for _, nu_url in batch:
+                        result_map[nu_url] = (None, None)
 
-                    # Series ID
-                    for pat in _sid_patterns:
-                        m = pat.search(html)
-                        if m:
-                            sid = m.group(1)
-                            break
-
-                    # Fenrir URL — take the first fenrirealm.com/series/<slug> link
-                    fm = _fenrir_pat.search(html)
-                    if fm:
-                        fenrir_url = f"https://fenrirealm.com/series/{fm.group(1).lower()}"
-
-                except Exception:
-                    pass
-
-                with lock:
-                    done_count += 1
-                    result_map[nu_url] = (sid, fenrir_url)
-                    if done_count % 30 == 0 or done_count == total:
-                        pct = 8 + int(72 * (done_count / total))
-                        TASKS[task_id]["progress"] = pct
-                        TASKS[task_id]["message"] = f"Fetching info… {done_count}/{total}"
-
-                return nu_url, sid, fenrir_url
-
-            with ThreadPoolExecutor(max_workers=15) as executor:
-                list(executor.map(fetch_novel_info, normalized))
+                done_count += len(batch)
+                pct = 8 + int(72 * (done_count / total))
+                TASKS[task_id]["progress"] = pct
+                TASKS[task_id]["message"] = f"Fetching info… {done_count}/{total}"
+                time.sleep(0.5)
 
             # ── Step 5: Upsert all novels into DB ──
             TASKS[task_id]["message"] = "Saving to database..."
