@@ -72,52 +72,36 @@ function renderNovels() {
     const listEl = document.getElementById('novelsList');
 
     if (novels.length === 0) {
-        listEl.innerHTML = '<div class="loading">No novels added yet. Add one above to get started!</div>';
+        listEl.innerHTML = '<div class="loading">No novels tracked yet.</div>';
         return;
     }
 
-    listEl.innerHTML = novels.map(novel => `
+    listEl.innerHTML = novels.map(novel => {
+        const meta = [
+            novel.group_name ? escapeHtml(novel.group_name) : null,
+            novel.nu_series_id ? `sid:${escapeHtml(String(novel.nu_series_id))}` : null,
+            novel.last_checked ? formatDate(novel.last_checked) : 'never checked',
+        ].filter(Boolean).join(' · ');
+
+        return `
         <div class="novel-card">
-            <div class="novel-header">
+            <div class="novel-row">
                 <div>
                     <div class="novel-title">${escapeHtml(novel.name)}</div>
-                    <div class="novel-info">
-                        <div class="novel-info-item">Group: ${escapeHtml(novel.group_name)}</div>
-                        ${novel.nu_series_id
-                            ? `<div class="novel-info-item">NU Series ID: ${escapeHtml(String(novel.nu_series_id))}</div>`
-                            : ''
-                        }
-                        ${novel.nu_group_id
-                            ? `<div class="novel-info-item">NU Group ID: ${escapeHtml(String(novel.nu_group_id))}</div>`
-                            : ''
-                        }
-                        ${novel.last_checked
-                            ? `<div class="novel-info-item">Last checked: ${formatDate(novel.last_checked)}</div>`
-                            : '<div class="novel-info-item">Never checked</div>'
-                        }
-                    </div>
+                    <div class="novel-meta">${meta}</div>
                 </div>
                 <div class="novel-actions">
-                    <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">Delete</button>
+                    <button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
+                    <button class="btn btn-success" onclick="viewMissing(${novel.id})">missing</button>
+                    <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>
                 </div>
             </div>
-            <div class="card-buttons">
-                <button class="btn btn-primary" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">
-                    Refresh Chapters
-                </button>
-                <button class="btn btn-success" onclick="viewMissing(${novel.id})">
-                    View Missing
-                </button>
-
-                <div id="progress-${novel.id}" style="display:none;margin-top:10px;">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progress-fill-${novel.id}"></div>
-                    </div>
-                    <div id="progress-text-${novel.id}" class="progress-text"></div>
-                </div>
+            <div class="novel-progress" id="progress-${novel.id}" style="display:none;">
+                <div class="progress-bar"><div class="progress-fill" id="progress-fill-${novel.id}"></div></div>
+                <div class="progress-text" id="progress-text-${novel.id}"></div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 /* =========================

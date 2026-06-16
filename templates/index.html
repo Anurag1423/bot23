@@ -10,68 +10,67 @@
     <div class="container">
         <header>
             <h1>Novel Chapter Tracker</h1>
-            <p class="subtitle">Manage and track novel chapters across Fenrir Realm and NovelUpdates</p>
+            <p class="subtitle">Fenrir Realm · NovelUpdates</p>
         </header>
-        
 
-        <!-- Add Novel Section -->
-        <section class="card add-novel-section">
-            <h2>Add Novel to Watch</h2>
+        <!-- Add Novel -->
+        <section>
+            <h2>Add Novel</h2>
             <form id="addNovelForm" class="form">
                 <div class="form-group">
-                    <label for="novelName">Novel Name</label>
-                    <input type="text" id="novelName" name="name" required placeholder="e.g., Kill the Emperor">
+                    <label for="novelName">Name</label>
+                    <input type="text" id="novelName" name="name" required placeholder="Kill the Emperor">
                 </div>
                 <div class="form-group">
-                    <label for="fenrirUrl">Fenrir Realm URL</label>
-                    <input type="url" id="fenrirUrl" name="fenrir_url" required 
-                           placeholder="https://fenrirealm.com/series/...">
+                    <label for="fenrirUrl">Fenrir URL</label>
+                    <input type="url" id="fenrirUrl" name="fenrir_url" required placeholder="https://fenrirealm.com/series/...">
                 </div>
                 <div class="form-group">
-                    <label for="nuUrl">NovelUpdates URL</label>
-                    <input type="url" id="nuUrl" name="nu_url" required 
-                           placeholder="https://www.novelupdates.com/series/...">
+                    <label for="nuUrl">NU URL</label>
+                    <input type="url" id="nuUrl" name="nu_url" required placeholder="https://www.novelupdates.com/series/...">
                 </div>
                 <div class="form-group">
-                    <label for="groupName">Group Name</label>
-                    <input type="text" id="groupName" name="group_name" value="Fenrir Realm" 
-                           placeholder="Translation group name">
+                    <label for="groupName">Group</label>
+                    <input type="text" id="groupName" name="group_name" value="Fenrir Realm" placeholder="Group name">
                 </div>
                 <div class="form-group">
                     <label for="nuSeriesId">NU Series ID</label>
-                    <input type="text" id="nuSeriesId" name="nu_series_id" placeholder="e.g., 102429">
+                    <input type="text" id="nuSeriesId" name="nu_series_id" placeholder="102429">
                 </div>
                 <div class="form-group">
                     <label for="nuGroupId">NU Group ID</label>
-                    <input type="text" id="nuGroupId" name="nu_group_id" placeholder="e.g., 78568" value="78568">
+                    <input type="text" id="nuGroupId" name="nu_group_id" placeholder="78568" value="78568">
                 </div>
-                <button type="submit" class="btn btn-primary">Add Novel</button>
+                <div class="form-group">
+                    <label></label>
+                    <div><button type="submit" class="btn btn-primary">Add</button></div>
+                </div>
             </form>
         </section>
 
-        <!-- Sync from Fenrir Realm -->
-        <section class="card" style="margin-bottom:1.5rem;">
-            <h2>Sync from Fenrir Realm</h2>
-            <p style="color:var(--text-muted);margin-bottom:1rem;">Automatically import all novels from the Fenrir Realm group on NovelUpdates, build their Fenrir URLs, and fetch their series IDs.</p>
-            <button id="syncBtn" class="btn btn-primary" onclick="syncFenrir()">Sync Novels from Fenrir Realm</button>
-            <div id="syncProgress" style="display:none;margin-top:14px;">
-                <div class="progress-bar">
-                    <div class="progress-fill" id="syncProgressFill"></div>
-                </div>
-                <div id="syncProgressText" class="progress-text"></div>
+        <!-- Sync -->
+        <section>
+            <h2>Sync</h2>
+            <p class="sync-desc">Import all novels from the Fenrir Realm group on NovelUpdates.</p>
+            <div class="sync-row">
+                <button id="syncBtn" class="btn btn-primary" onclick="syncFenrir()">Sync from Fenrir Realm</button>
+            </div>
+            <div id="syncProgress" style="display:none;margin-top:12px;" class="sync-row">
+                <div class="progress-bar" style="flex:1;"><div class="progress-fill" id="syncProgressFill"></div></div>
+                <div class="progress-text" id="syncProgressText"></div>
             </div>
         </section>
 
-        <!-- Novels List -->
+        <!-- Novels -->
         <section class="novels-section">
-            <h2>Watched Novels</h2>
-            <div id="novelsList" class="novels-grid">
-                <div class="loading">Loading novels...</div>
+            <h2>Tracked Novels</h2>
+            <div id="novelsList">
+                <div class="loading">Loading...</div>
             </div>
         </section>
     </div>
 
-    <!-- Modal for Missing Chapters -->
+    <!-- Modal -->
     <div id="missingModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -85,10 +84,7 @@
         </div>
     </div>
 
-    <!-- Toast Notifications -->
     <div id="toast" class="toast"></div>
-
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
-
