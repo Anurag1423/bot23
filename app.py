@@ -64,6 +64,8 @@ class Novel(db.Model):
     fenrir_links = db.Column(db.Text)
     nu_chapters = db.Column(db.Text)
     last_checked = db.Column(db.DateTime)
+    # 'active' | 'missing' — missing means no Fenrir page found (DMCA / not yet published)
+    status = db.Column(db.String(20), default="active")
 
     def to_dict(self):
         return {
@@ -74,6 +76,7 @@ class Novel(db.Model):
             "group_name": self.group_name,
             "nu_series_id": self.nu_series_id,
             "nu_group_id": self.nu_group_id,
+            "status": self.status or "active",
             "last_checked": (
                 self.last_checked.isoformat() if self.last_checked else None
             ),
@@ -92,6 +95,8 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE novel ADD COLUMN nu_group_id VARCHAR(32)"))
         if "fenrir_links" not in cols:
             db.session.execute(db.text("ALTER TABLE novel ADD COLUMN fenrir_links TEXT"))
+        if "status" not in cols:
+            db.session.execute(db.text("ALTER TABLE novel ADD COLUMN status VARCHAR(20) DEFAULT 'active'"))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -1012,17 +1017,26 @@ def novels():
         data = request.json
         n = Novel(
             name=data["name"],
-            fenrir_url=data["fenrir_url"],
+            fenrir_url=data.get("fenrir_url") or "",
             nu_url=data["nu_url"],
             group_name=data.get("group_name", "Fenrir Realm"),
             nu_series_id=(str(data.get("nu_series_id")).strip() if data.get("nu_series_id") else None),
             nu_group_id=(str(data.get("nu_group_id")).strip() if data.get("nu_group_id") else None),
+            status="active",
         )
         db.session.add(n)
         db.session.commit()
         return jsonify(n.to_dict()), 201
 
-    return jsonify([n.to_dict() for n in Novel.query.all()])
+    # ?all=1 returns every novel including missing/dmca ones
+    include_all = request.args.get("all", "0") == "1"
+    if include_all:
+        rows = Novel.query.order_by(Novel.name).all()
+    else:
+        rows = Novel.query.filter(
+            db.or_(Novel.status == "active", Novel.status == None)  # noqa: E711
+        ).order_by(Novel.name).all()
+    return jsonify([n.to_dict() for n in rows])
 
 
 @app.route("/api/novels/<int:novel_id>", methods=["DELETE"])
@@ -1035,11 +1049,29 @@ def delete_novel(novel_id):
     return jsonify({"deleted": True, "id": novel_id})
 
 
+@app.route("/api/novels/<int:novel_id>/reactivate", methods=["POST"])
+def reactivate_novel(novel_id):
+    """Mark a missing/dmca novel as active so it gets scanned again."""
+    novel = db.session.get(Novel, novel_id)
+    if not novel:
+        return jsonify({"error": "Novel not found"}), 404
+    novel.status = "active"
+    db.session.commit()
+    return jsonify(novel.to_dict())
+
+
 @app.route("/api/novels/<int:novel_id>/refresh", methods=["POST"])
 def refresh(novel_id):
     novel = db.session.get(Novel, novel_id)
     if not novel:
         return jsonify({"error": "Novel not found"}), 404
+
+    # Block refresh for missing novels unless the caller explicitly forces it.
+    force = (request.json or {}).get("force", False)
+    if (novel.status or "active") == "missing" and not force:
+        return jsonify({
+            "error": "Novel is marked missing (no Fenrir page found). Use reactivate first or pass force:true."
+        }), 409
 
     task_id = uuid.uuid4().hex
     TASKS[task_id] = {
@@ -1080,6 +1112,9 @@ def refresh(novel_id):
                 nobj.last_checked = datetime.now(timezone.utc)
                 if series_id:
                     nobj.nu_series_id = series_id
+                # If we found Fenrir chapters, confirm the novel is active.
+                if f:
+                    nobj.status = "active"
                 db.session.commit()
 
             TASKS[task_id]["progress"] = 100
@@ -1223,23 +1258,33 @@ Promise.all(urls.map(function(url) {
 
             added = 0
             skipped = 0
-            no_fenrir = 0
+            marked_missing = 0
             with app.app_context():
                 for title, nu_url in normalized:
                     sid, fenrir_url = result_map.get(nu_url, (None, None))
 
-                    # Fallback to slug only if no real URL found on NU page
+                    # No Fenrir link found on the NU page → novel is missing from Fenrir
+                    # (DMCA removal or not yet published there). Store a slug placeholder
+                    # so the row satisfies the NOT NULL constraint, but flag as missing.
+                    novel_status = "active"
                     if not fenrir_url:
                         slug = title_to_fenrir_slug(title)
                         fenrir_url = f"https://fenrirealm.com/series/{slug}"
-                        no_fenrir += 1
+                        novel_status = "missing"
+                        marked_missing += 1
 
                     existing = Novel.query.filter_by(nu_url=nu_url).first()
                     if existing:
                         if sid and not existing.nu_series_id:
                             existing.nu_series_id = sid
-                        if fenrir_url and not existing.fenrir_url:
+                        # If we now have a real Fenrir URL and the novel was missing, reactivate.
+                        if fenrir_url and novel_status == "active":
                             existing.fenrir_url = fenrir_url
+                            if (existing.status or "active") == "missing":
+                                existing.status = "active"
+                        # If still no Fenrir URL and not already marked, flag it.
+                        elif novel_status == "missing" and not existing.status:
+                            existing.status = "missing"
                         skipped += 1
                     else:
                         n = Novel(
@@ -1249,13 +1294,14 @@ Promise.all(urls.map(function(url) {
                             group_name="Fenrir Realm",
                             nu_series_id=sid,
                             nu_group_id="78568",
+                            status=novel_status,
                         )
                         db.session.add(n)
                         added += 1
 
                 db.session.commit()
 
-            logger.info("📊 Sync: added=%d skipped=%d no_fenrir_link=%d", added, skipped, no_fenrir)
+            logger.info("📊 Sync: added=%d skipped=%d marked_missing=%d", added, skipped, marked_missing)
 
             TASKS[task_id]["progress"] = 100
             TASKS[task_id]["status"] = "completed"

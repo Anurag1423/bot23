@@ -387,6 +387,52 @@ section > h2 {
     padding: 20px 0;
 }
 
+/* ── Missing / DMCA section ── */
+.novel-card--missing .novel-title {
+    color: var(--muted);
+    text-decoration: line-through;
+    text-decoration-color: #333;
+}
+
+.novel-card--missing .novel-meta {
+    color: #3a3a3a;
+}
+
+.missing-section {
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
+.missing-toggle {
+    font-family: inherit;
+    font-size: 11px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 4px 0;
+    letter-spacing: 0.05em;
+}
+
+.missing-toggle:hover {
+    color: var(--text);
+}
+
+.missing-list {
+    display: none;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+}
+
+.missing-section.open .missing-list {
+    display: block;
+}
+
+.missing-section.open .missing-toggle {
+    color: var(--text);
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg); }

@@ -56,10 +56,10 @@ document.addEventListener('DOMContentLoaded', () => {
    NOVELS
 ========================= */
 
-// Load novels from API
+// Load novels from API — fetch all including missing so we can show both sections
 async function loadNovels() {
     try {
-        const response = await fetch(`${API_BASE}/novels`);
+        const response = await fetch(`${API_BASE}/novels?all=1`);
         novels = await response.json();
         renderNovels();
     } catch (error) {
@@ -67,41 +67,70 @@ async function loadNovels() {
     }
 }
 
-// Render novels list
+function _novelCard(novel, isMissing) {
+    const meta = [
+        novel.group_name ? escapeHtml(novel.group_name) : null,
+        novel.nu_series_id ? `sid:${escapeHtml(String(novel.nu_series_id))}` : null,
+        novel.last_checked ? formatDate(novel.last_checked) : 'never checked',
+    ].filter(Boolean).join(' · ');
+
+    const actions = isMissing
+        ? `<button class="btn" onclick="reactivateNovel(${novel.id})">reactivate</button>
+           <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>`
+        : `<button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
+           <button class="btn btn-success" onclick="viewMissing(${novel.id})">missing</button>
+           <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>`;
+
+    return `
+    <div class="novel-card${isMissing ? ' novel-card--missing' : ''}">
+        <div class="novel-row">
+            <div>
+                <div class="novel-title">${escapeHtml(novel.name)}</div>
+                <div class="novel-meta">${meta}</div>
+            </div>
+            <div class="novel-actions">${actions}</div>
+        </div>
+        ${!isMissing ? `
+        <div class="novel-progress" id="progress-${novel.id}" style="display:none;">
+            <div class="progress-bar"><div class="progress-fill" id="progress-fill-${novel.id}"></div></div>
+            <div class="progress-text" id="progress-text-${novel.id}"></div>
+        </div>` : ''}
+    </div>`;
+}
+
+// Render novels list — active novels then a collapsible missing section
 function renderNovels() {
     const listEl = document.getElementById('novelsList');
 
-    if (novels.length === 0) {
+    const active  = novels.filter(n => (n.status || 'active') === 'active');
+    const missing = novels.filter(n => n.status === 'missing');
+
+    let html = '';
+
+    if (active.length === 0 && missing.length === 0) {
         listEl.innerHTML = '<div class="loading">No novels tracked yet.</div>';
         return;
     }
 
-    listEl.innerHTML = novels.map(novel => {
-        const meta = [
-            novel.group_name ? escapeHtml(novel.group_name) : null,
-            novel.nu_series_id ? `sid:${escapeHtml(String(novel.nu_series_id))}` : null,
-            novel.last_checked ? formatDate(novel.last_checked) : 'never checked',
-        ].filter(Boolean).join(' · ');
+    if (active.length > 0) {
+        html += active.map(n => _novelCard(n, false)).join('');
+    } else {
+        html += '<div class="loading">No active novels.</div>';
+    }
 
-        return `
-        <div class="novel-card">
-            <div class="novel-row">
-                <div>
-                    <div class="novel-title">${escapeHtml(novel.name)}</div>
-                    <div class="novel-meta">${meta}</div>
-                </div>
-                <div class="novel-actions">
-                    <button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
-                    <button class="btn btn-success" onclick="viewMissing(${novel.id})">missing</button>
-                    <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>
-                </div>
-            </div>
-            <div class="novel-progress" id="progress-${novel.id}" style="display:none;">
-                <div class="progress-bar"><div class="progress-fill" id="progress-fill-${novel.id}"></div></div>
-                <div class="progress-text" id="progress-text-${novel.id}"></div>
+    if (missing.length > 0) {
+        html += `
+        <div class="missing-section">
+            <button class="missing-toggle" onclick="this.parentElement.classList.toggle('open')">
+                Missing / DMCA'd (${missing.length}) ▸
+            </button>
+            <div class="missing-list">
+                ${missing.map(n => _novelCard(n, true)).join('')}
             </div>
         </div>`;
-    }).join('');
+    }
+
+    listEl.innerHTML = html;
 }
 
 /* =========================
@@ -191,6 +220,21 @@ async function deleteNovel(id) {
 }
 
 /* =========================
+   REACTIVATE
+========================= */
+
+async function reactivateNovel(id) {
+    try {
+        const res = await fetch(`${API_BASE}/novels/${id}/reactivate`, { method: 'POST' });
+        if (!res.ok) throw new Error('Reactivate failed');
+        showToast('Novel reactivated — refresh it to scan for chapters.', 'success');
+        loadNovels();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+/* =========================
    REFRESH
 ========================= */
 
@@ -218,7 +262,7 @@ async function refreshNovel(id) {
                 clearInterval(poll);
                 playDoneSound(s.status === 'error');
                 btn.disabled = false;
-                btn.textContent = 'Refresh Chapters';
+                btn.textContent = 'refresh';
                 progress.style.display = 'none';
                 loadNovels();
             }
