@@ -292,19 +292,30 @@ async function refreshNovel(id) {
     }
 }
 
+let _stopRefreshAll = false;
+
 async function refreshAllNovels() {
     const active = novels.filter(n => (n.status || 'active') === 'active');
     if (active.length === 0) { showToast('No active novels to refresh.', 'info'); return; }
 
-    const btn       = document.getElementById('refreshAllBtn');
-    const statusEl  = document.getElementById('refreshAllStatus');
-    btn.disabled    = true;
+    _stopRefreshAll = false;
+
+    const btn      = document.getElementById('refreshAllBtn');
+    const stopBtn  = document.getElementById('stopRefreshAllBtn');
+    const statusEl = document.getElementById('refreshAllStatus');
+
+    btn.style.display     = 'none';
+    stopBtn.style.display = 'inline-block';
     statusEl.style.display = 'block';
 
     let done = 0;
     let errors = 0;
 
     for (const novel of active) {
+        if (_stopRefreshAll) {
+            statusEl.textContent = `Stopped after ${done} / ${active.length}.`;
+            break;
+        }
         statusEl.textContent = `Refreshing ${done + 1} / ${active.length} — ${novel.name}`;
         try {
             const result = await _refreshNovelAndWait(novel.id);
@@ -313,14 +324,21 @@ async function refreshAllNovels() {
             errors++;
         }
         done++;
-        // Reload list so last_checked updates after each novel
         await loadNovels();
     }
 
-    btn.disabled = false;
-    statusEl.textContent = `Done — ${active.length} novels refreshed${errors ? `, ${errors} error(s)` : ''}.`;
-    playDoneSound(errors > 0);
+    btn.style.display      = 'inline-block';
+    stopBtn.style.display  = 'none';
+
+    if (!_stopRefreshAll) {
+        statusEl.textContent = `Done — ${done} novels refreshed${errors ? `, ${errors} error(s)` : ''}.`;
+        playDoneSound(errors > 0);
+    }
     setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
+}
+
+function stopRefreshAll() {
+    _stopRefreshAll = true;
 }
 
 /* =========================
