@@ -1066,12 +1066,15 @@ def sync_fenrir():
     TASKS[task_id] = {"status": "running", "progress": 0, "message": "Starting sync..."}
 
     def task():
+        import requests as req_lib
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         try:
             sb = browser.get_sb()
 
             # ── Step 1: Load the Fenrir Realm group page on NU ──
             TASKS[task_id]["message"] = "Loading Fenrir Realm group page..."
-            TASKS[task_id]["progress"] = 5
+            TASKS[task_id]["progress"] = 3
             group_url = "https://www.novelupdates.com/group/fenrir-realm/"
             fast_open(sb, group_url, timeout_seconds=15)
             time.sleep(3)
@@ -1095,24 +1098,91 @@ def sync_fenrir():
 
             total = len(records)
             logger.info("📋 Found %d novels on Fenrir Realm group page", total)
-            TASKS[task_id]["message"] = f"Found {total} novels. Saving..."
-            TASKS[task_id]["progress"] = 20
+
+            # ── Step 3: Grab browser cookies/UA so parallel requests bypass Cloudflare ──
+            try:
+                cookies = {c["name"]: c["value"] for c in sb.driver.get_cookies()}
+                user_agent = sb.execute_script("return navigator.userAgent;") or ""
+            except Exception:
+                cookies = {}
+                user_agent = "Mozilla/5.0"
+
+            headers = {
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Connection": "keep-alive",
+            }
+
+            # Normalize URLs
+            normalized = []
+            for title, nu_url in records:
+                if nu_url.startswith("/"):
+                    nu_url = "https://www.novelupdates.com" + nu_url
+                normalized.append((title, nu_url))
+
+            # ── Step 4: Fetch series IDs in parallel via requests (reusing Cloudflare cookies) ──
+            TASKS[task_id]["message"] = f"Found {total} novels. Fetching series IDs in parallel..."
+            TASKS[task_id]["progress"] = 8
+
+            series_id_map = {}
+            done_count = 0
+            lock = threading.Lock()
+
+            _sid_patterns = [
+                re.compile(r'id="mypostid"\s+value="(\d+)"', re.IGNORECASE),
+                re.compile(r"\bpostid-(\d+)\b"),
+                re.compile(r"\bseries_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
+                re.compile(r"\bpost_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
+            ]
+
+            def fetch_series_id(args):
+                nonlocal done_count
+                title, nu_url = args
+                sid = None
+                try:
+                    resp = req_lib.get(
+                        nu_url, cookies=cookies, headers=headers,
+                        timeout=12, allow_redirects=True,
+                    )
+                    html = resp.text
+                    for pat in _sid_patterns:
+                        m = pat.search(html)
+                        if m:
+                            sid = m.group(1)
+                            break
+                except Exception:
+                    pass
+
+                with lock:
+                    done_count += 1
+                    series_id_map[nu_url] = sid
+                    if done_count % 30 == 0 or done_count == total:
+                        pct = 8 + int(72 * (done_count / total))
+                        TASKS[task_id]["progress"] = pct
+                        TASKS[task_id]["message"] = f"Fetching series IDs… {done_count}/{total}"
+
+                return nu_url, sid
+
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                list(executor.map(fetch_series_id, normalized))
+
+            # ── Step 5: Upsert all novels into DB ──
+            TASKS[task_id]["message"] = "Saving to database..."
+            TASKS[task_id]["progress"] = 82
 
             added = 0
             skipped = 0
-
-            # ── Step 3: Upsert all novels using only info from the group page ──
-            # Series IDs are fetched lazily when the user triggers Refresh on each novel.
             with app.app_context():
-                for idx, (title, nu_url) in enumerate(records):
-                    if nu_url.startswith("/"):
-                        nu_url = "https://www.novelupdates.com" + nu_url
-
+                for title, nu_url in normalized:
+                    sid = series_id_map.get(nu_url)
                     slug = title_to_fenrir_slug(title)
                     fenrir_url = f"https://fenrirealm.com/series/{slug}"
 
                     existing = Novel.query.filter_by(nu_url=nu_url).first()
                     if existing:
+                        if sid and not existing.nu_series_id:
+                            existing.nu_series_id = sid
                         skipped += 1
                     else:
                         n = Novel(
@@ -1120,23 +1190,17 @@ def sync_fenrir():
                             fenrir_url=fenrir_url,
                             nu_url=nu_url,
                             group_name="Fenrir Realm",
-                            nu_series_id=None,
+                            nu_series_id=sid,
                             nu_group_id="78568",
                         )
                         db.session.add(n)
                         added += 1
 
-                    if idx % 100 == 0:
-                        db.session.commit()
-                        pct = 20 + int(75 * (idx / total))
-                        TASKS[task_id]["progress"] = pct
-                        TASKS[task_id]["message"] = f"Saving {idx + 1}/{total}..."
-
                 db.session.commit()
 
             TASKS[task_id]["progress"] = 100
             TASKS[task_id]["status"] = "completed"
-            TASKS[task_id]["message"] = f"Done! Added {added} new, skipped {skipped} existing. Series IDs will be fetched on first Refresh."
+            TASKS[task_id]["message"] = f"Done! Added {added} new, skipped {skipped} existing."
 
         except Exception as e:
             logger.error("sync-fenrir task error: %s", e)
