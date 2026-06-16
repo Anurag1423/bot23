@@ -648,8 +648,6 @@ def submission_worker():
         try:
             novel_id, vol, ch = submission_queue.get(timeout=20)
         except Empty:
-            # Queue drained — close the browser so Chrome doesn't sit open idle.
-            browser.close()
             continue
 
         sb = None
@@ -995,6 +993,9 @@ def submission_worker():
                 submission_queue.task_done()
             except Exception:
                 pass
+            # Close Chrome once the queue is fully drained.
+            if submission_queue.empty():
+                browser.close()
 
 
 # ------------------ API ------------------
