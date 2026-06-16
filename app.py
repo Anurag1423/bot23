@@ -1060,6 +1060,17 @@ def reactivate_novel(novel_id):
     return jsonify(novel.to_dict())
 
 
+@app.route("/api/novels/<int:novel_id>/mark-missing", methods=["POST"])
+def mark_novel_missing(novel_id):
+    """Manually flag a novel as missing/DMCA'd."""
+    novel = db.session.get(Novel, novel_id)
+    if not novel:
+        return jsonify({"error": "Novel not found"}), 404
+    novel.status = "missing"
+    db.session.commit()
+    return jsonify(novel.to_dict())
+
+
 @app.route("/api/novels/<int:novel_id>/refresh", methods=["POST"])
 def refresh(novel_id):
     novel = db.session.get(Novel, novel_id)

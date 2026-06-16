@@ -85,6 +85,7 @@ function _novelCard(novel, isMissing) {
         : `${linkBtns}
            <button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
            <button class="btn btn-success" onclick="viewMissing(${novel.id})">missing</button>
+           <button class="btn btn-secondary" onclick="markMissing(${novel.id})" title="Manually mark as missing/DMCA'd">mark missing</button>
            <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>`;
 
     return `
@@ -236,6 +237,18 @@ async function reactivateNovel(id) {
         const res = await fetch(`${API_BASE}/novels/${id}/reactivate`, { method: 'POST' });
         if (!res.ok) throw new Error('Reactivate failed');
         showToast('Novel reactivated — refresh it to scan for chapters.', 'success');
+        loadNovels();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function markMissing(id) {
+    if (!confirm('Mark this novel as missing / DMCA\'d?')) return;
+    try {
+        const res = await fetch(`${API_BASE}/novels/${id}/mark-missing`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to mark as missing');
+        showToast('Novel moved to missing.', 'info');
         loadNovels();
     } catch (err) {
         showToast(err.message, 'error');
