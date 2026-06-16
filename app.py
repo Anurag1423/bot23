@@ -438,102 +438,141 @@ def crawl_fenrir_chapters(sb, url):
     return chapters, links
 
 
-def crawl_nu_chapters(sb, url, group_id=None):
+def crawl_nu_chapters(sb, url, group_id=None, series_id=None):
+    gid = str(group_id).strip() if group_id is not None else ""
+    sid = str(series_id).strip() if series_id is not None else ""
+
     final_url = url
     try:
-        gid = str(group_id).strip() if group_id is not None else ""
         if gid:
             p = urlparse(url)
             q = parse_qs(p.query)
             q["pg"] = ["1"]
             q["grp"] = [gid]
-            final_url = urlunparse(
-                (
-                    p.scheme,
-                    p.netloc,
-                    p.path,
-                    p.params,
-                    urlencode(q, doseq=True),
-                    p.fragment,
-                )
-            )
+            final_url = urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
     except Exception:
         final_url = url
 
-    fast_open(sb, final_url, timeout_seconds=8)
+    fast_open(sb, final_url, timeout_seconds=10)
     time.sleep(2)
 
     chapters = set()
-    # Avoid waiting for full load; we'll wait for the popup/required selectors instead.
 
-    # NU often hides the full chapter list behind a popup. Open it first.
-    try:
-        sb.execute_script(
-            """
-            if (typeof list_allchpstwo === 'function') {
-              try { list_allchpstwo(); } catch (e) {}
-            }
-            """
-        )
-    except Exception:
-        pass
+    def _parse_html_for_chapters(html):
+        """Extract vol/ch pairs from arbitrary HTML (popup or AJAX response)."""
+        found = set()
+        # span title="v1 c5" or span title="c5"
+        for m in re.finditer(r'title="([^"]*)"', html):
+            p = parse_vol_ch(m.group(1))
+            if p:
+                found.add(p)
+        # plain text patterns like v1c5 or c5
+        for m in re.finditer(r'\bv(\d+)\s*c(\d+)\b|\bc(\d+)\b', html, re.IGNORECASE):
+            if m.group(1):
+                found.add((int(m.group(1)), int(m.group(2))))
+            else:
+                found.add((0, int(m.group(3))))
+        return found
 
-    try:
-        sb.wait_for_element_visible("#my_popupreading", timeout=8)
-        for s in sb.find_elements("#my_popupreading ol.sp_chp span[title]"):
-            t = (s.get_attribute("title") or "").strip()
-            parsed = parse_vol_ch(t)
-            if parsed:
-                chapters.add(parsed)
-    except Exception:
-        # Fallback: attempt clicking the popup open button
+    # ── Strategy 1: Call NU's nd_getchapters AJAX directly from the browser ──
+    # This is the most reliable because it uses the logged-in session and returns
+    # all chapters in one shot, bypassing popup timing issues.
+    if sid:
         try:
-            sb.click(".my_popupreading_open")
-            sb.wait_for_element_visible("#my_popupreading", timeout=8)
-            for s in sb.find_elements("#my_popupreading ol.sp_chp span[title]"):
-                t = (s.get_attribute("title") or "").strip()
-                parsed = parse_vol_ch(t)
-                if parsed:
-                    chapters.add(parsed)
-        except Exception:
-            pass
+            _JS_AJAX = """
+var cb = arguments[arguments.length - 1];
+var fd = new FormData();
+fd.append('action', 'nd_getchapters');
+fd.append('mypostid', arguments[0]);
+if (arguments[1]) fd.append('mygrplist', arguments[1]);
+fetch('/wp-admin/admin-ajax.php', {method:'POST', credentials:'include', body:fd})
+    .then(function(r){return r.text();})
+    .then(function(h){cb(h);})
+    .catch(function(){cb('');});
+"""
+            sb.driver.set_script_timeout(30)
+            ajax_html = sb.driver.execute_async_script(_JS_AJAX, sid, gid)
+            if ajax_html:
+                chapters |= _parse_html_for_chapters(ajax_html)
+                logger.info("📚 NU chapters via AJAX: %s", len(chapters))
+        except Exception as e:
+            logger.warning("nd_getchapters AJAX failed: %s", e)
 
-    # Prefer releases table when present
-    selectors = [
-        "table a",
-        "a",
-    ]
-
-    for sel in selectors:
-        try:
-            for a in sb.find_elements(sel):
-                href = a.get_attribute("href") or ""
-                text = (a.text or "").strip()
-                parsed = parse_vol_ch(text)
-                if not parsed and href:
-                    # Sometimes chapter string is in the URL query or slug
-                    m = re.search(r"\b(?:v(\d+)\s*)?c(\d+)\b", href, re.IGNORECASE)
-                    if m:
-                        v = int(m.group(1)) if m.group(1) else 0
-                        c = int(m.group(2))
-                        parsed = (v, c)
-                if parsed:
-                    chapters.add(parsed)
-        except Exception:
-            pass
-
-    # Last resort: parse visible page text
+    # ── Strategy 2: Open the "Show all chapters" popup, wait for list items ──
     if not chapters:
         try:
-            body = sb.get_text("body") or ""
-            for m in re.finditer(r"\b(?:v(\d+)\s*)?c(\d+)\b", body, re.IGNORECASE):
-                v = int(m.group(1)) if m.group(1) else 0
-                c = int(m.group(2))
-                chapters.add((v, c))
+            # Wait until the JS function is defined, then call it
+            sb.execute_script("""
+                var t = 0;
+                var iv = setInterval(function(){
+                    if (typeof list_allchpstwo === 'function') {
+                        clearInterval(iv);
+                        list_allchpstwo();
+                    }
+                    if (++t > 40) clearInterval(iv);
+                }, 250);
+            """)
         except Exception:
             pass
 
-    logger.info("📚 NU chapters: %s", len(chapters))
+        # Wait for actual list items to appear (not just the container)
+        popup_loaded = False
+        for selector in ["#my_popupreading ol.sp_chp li", "#my_popupreading li"]:
+            try:
+                sb.wait_for_element_visible(selector, timeout=15)
+                popup_loaded = True
+                break
+            except Exception:
+                pass
+
+        if not popup_loaded:
+            # Try clicking the button directly as fallback
+            try:
+                sb.click(".my_popupreading_open")
+                for selector in ["#my_popupreading ol.sp_chp li", "#my_popupreading li"]:
+                    try:
+                        sb.wait_for_element_visible(selector, timeout=12)
+                        popup_loaded = True
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        if popup_loaded:
+            try:
+                popup_html = sb.execute_script("return document.getElementById('my_popupreading').innerHTML || '';")
+                chapters |= _parse_html_for_chapters(popup_html or "")
+            except Exception:
+                pass
+
+            # Also try direct element scraping
+            for sel in ["#my_popupreading ol.sp_chp span[title]", "#my_popupreading span[title]"]:
+                try:
+                    for s in sb.find_elements(sel):
+                        t = (s.get_attribute("title") or "").strip()
+                        p = parse_vol_ch(t)
+                        if p:
+                            chapters.add(p)
+                except Exception:
+                    pass
+
+        logger.info("📚 NU chapters via popup: %s", len(chapters))
+
+    # ── Strategy 3: Releases table already on page (group-filtered URL) ──
+    if not chapters:
+        try:
+            # Only look inside the releases table, not all links on page
+            for a in sb.find_elements("table.tablesorter td a, #releases a, .releasesindex a"):
+                text = (a.text or "").strip()
+                p = parse_vol_ch(text)
+                if p:
+                    chapters.add(p)
+        except Exception:
+            pass
+        logger.info("📚 NU chapters via table: %s", len(chapters))
+
+    logger.info("📚 NU chapters total: %s", len(chapters))
     return chapters
 
 
@@ -1015,7 +1054,7 @@ def refresh(novel_id):
 
             TASKS[task_id]["progress"] = 55
             TASKS[task_id]["message"] = "Loading NovelUpdates..."
-            n = crawl_nu_chapters(sb, novel.nu_url, group_id=getattr(novel, "nu_group_id", None))
+            n = crawl_nu_chapters(sb, novel.nu_url, group_id=getattr(novel, "nu_group_id", None), series_id=getattr(novel, "nu_series_id", None))
 
             # Extract series ID from the NU page we just visited (free — no extra request)
             series_id = None
