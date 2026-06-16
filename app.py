@@ -1067,7 +1067,7 @@ def refresh(novel_id):
         return jsonify({"error": "Novel not found"}), 404
 
     # Block refresh for missing novels unless the caller explicitly forces it.
-    force = (request.json or {}).get("force", False)
+    force = (request.get_json(silent=True) or {}).get("force", False)
     if (novel.status or "active") == "missing" and not force:
         return jsonify({
             "error": "Novel is marked missing (no Fenrir page found). Use reactivate first or pass force:true."
