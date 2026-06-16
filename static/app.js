@@ -74,10 +74,16 @@ function _novelCard(novel, isMissing) {
         novel.last_checked ? formatDate(novel.last_checked) : 'never checked',
     ].filter(Boolean).join(' · ');
 
+    const linkBtns = `
+        ${novel.fenrir_url ? `<a class="btn" href="${escapeHtml(novel.fenrir_url)}" target="_blank" rel="noopener">fenrir</a>` : ''}
+        ${novel.nu_url     ? `<a class="btn" href="${escapeHtml(novel.nu_url)}"     target="_blank" rel="noopener">nu</a>`     : ''}`;
+
     const actions = isMissing
-        ? `<button class="btn" onclick="reactivateNovel(${novel.id})">reactivate</button>
+        ? `${linkBtns}
+           <button class="btn" onclick="reactivateNovel(${novel.id})">reactivate</button>
            <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>`
-        : `<button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
+        : `${linkBtns}
+           <button class="btn" onclick="refreshNovel(${novel.id})" id="refresh-${novel.id}">refresh</button>
            <button class="btn btn-success" onclick="viewMissing(${novel.id})">missing</button>
            <button class="btn btn-danger" onclick="deleteNovel(${novel.id})">del</button>`;
 
