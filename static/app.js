@@ -240,41 +240,87 @@ async function reactivateNovel(id) {
    REFRESH
 ========================= */
 
+// Returns a Promise that resolves when the refresh task finishes (or rejects on error).
+function _refreshNovelAndWait(id) {
+    return new Promise(async (resolve, reject) => {
+        const btn  = document.getElementById(`refresh-${id}`);
+        const prog = document.getElementById(`progress-${id}`);
+        const fill = document.getElementById(`progress-fill-${id}`);
+        const text = document.getElementById(`progress-text-${id}`);
+
+        if (btn)  { btn.disabled = true; btn.textContent = 'refreshing…'; }
+        if (prog) prog.style.display = 'block';
+
+        try {
+            const res = await fetch(`${API_BASE}/novels/${id}/refresh`, { method: 'POST' });
+            if (!res.ok) { const e = await res.json(); throw new Error(e.error || res.status); }
+            const { task_id } = await res.json();
+
+            const poll = setInterval(async () => {
+                try {
+                    const s = await fetch(`${API_BASE}/tasks/${task_id}`).then(r => r.json());
+                    if (fill) fill.style.width = `${s.progress || 0}%`;
+                    if (text) text.textContent = s.message || '';
+
+                    if (s.status === 'completed' || s.status === 'error') {
+                        clearInterval(poll);
+                        if (btn)  { btn.disabled = false; btn.textContent = 'refresh'; }
+                        if (prog) prog.style.display = 'none';
+                        resolve(s.status);
+                    }
+                } catch (pollErr) {
+                    clearInterval(poll);
+                    reject(pollErr);
+                }
+            }, 1000);
+
+        } catch (err) {
+            if (btn)  { btn.disabled = false; btn.textContent = 'refresh'; }
+            if (prog) prog.style.display = 'none';
+            reject(err);
+        }
+    });
+}
+
 async function refreshNovel(id) {
-    const btn = document.getElementById(`refresh-${id}`);
-    const progress = document.getElementById(`progress-${id}`);
-    const fill = document.getElementById(`progress-fill-${id}`);
-    const text = document.getElementById(`progress-text-${id}`);
-
-    btn.disabled = true;
-    btn.textContent = 'Refreshing...';
-    progress.style.display = 'block';
-
     try {
-        const res = await fetch(`${API_BASE}/novels/${id}/refresh`, { method: 'POST' });
-        const { task_id } = await res.json();
-
-        const poll = setInterval(async () => {
-            const s = await fetch(`${API_BASE}/tasks/${task_id}`).then(r => r.json());
-
-            fill.style.width = `${s.progress || 0}%`;
-            text.textContent = s.message || '';
-
-            if (s.status === 'completed' || s.status === 'error') {
-                clearInterval(poll);
-                playDoneSound(s.status === 'error');
-                btn.disabled = false;
-                btn.textContent = 'refresh';
-                progress.style.display = 'none';
-                loadNovels();
-            }
-        }, 1000);
-
+        const status = await _refreshNovelAndWait(id);
+        playDoneSound(status === 'error');
+        loadNovels();
     } catch (err) {
-        btn.disabled = false;
-        progress.style.display = 'none';
         showToast(err.message, 'error');
     }
+}
+
+async function refreshAllNovels() {
+    const active = novels.filter(n => (n.status || 'active') === 'active');
+    if (active.length === 0) { showToast('No active novels to refresh.', 'info'); return; }
+
+    const btn       = document.getElementById('refreshAllBtn');
+    const statusEl  = document.getElementById('refreshAllStatus');
+    btn.disabled    = true;
+    statusEl.style.display = 'block';
+
+    let done = 0;
+    let errors = 0;
+
+    for (const novel of active) {
+        statusEl.textContent = `Refreshing ${done + 1} / ${active.length} — ${novel.name}`;
+        try {
+            const result = await _refreshNovelAndWait(novel.id);
+            if (result === 'error') errors++;
+        } catch (e) {
+            errors++;
+        }
+        done++;
+        // Reload list so last_checked updates after each novel
+        await loadNovels();
+    }
+
+    btn.disabled = false;
+    statusEl.textContent = `Done — ${active.length} novels refreshed${errors ? `, ${errors} error(s)` : ''}.`;
+    playDoneSound(errors > 0);
+    setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
 }
 
 /* =========================

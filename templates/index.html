@@ -65,8 +65,12 @@
         <section class="novels-section">
             <div class="novels-header">
                 <h2>Tracked Novels</h2>
-                <input type="search" id="novelSearch" placeholder="search…" oninput="renderNovels()" autocomplete="off">
+                <div class="novels-header-right">
+                    <button id="refreshAllBtn" class="btn" onclick="refreshAllNovels()">refresh all</button>
+                    <input type="search" id="novelSearch" placeholder="search…" oninput="renderNovels()" autocomplete="off">
+                </div>
             </div>
+            <div id="refreshAllStatus" style="display:none;" class="refresh-all-status"></div>
             <div id="novelsList">
                 <div class="loading">Loading...</div>
             </div>
