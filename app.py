@@ -1112,9 +1112,11 @@ def refresh(novel_id):
                 nobj.last_checked = datetime.now(timezone.utc)
                 if series_id:
                     nobj.nu_series_id = series_id
-                # If we found Fenrir chapters, confirm the novel is active.
+                # 0 Fenrir chapters = page gone (DMCA / removed). Flag as missing.
                 if f:
                     nobj.status = "active"
+                else:
+                    nobj.status = "missing"
                 db.session.commit()
 
             TASKS[task_id]["progress"] = 100
