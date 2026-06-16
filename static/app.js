@@ -6,6 +6,46 @@ let novels = [];
 let refreshIntervals = {};
 window.currentMissingChapters = null;
 
+/* =========================
+   NOTIFICATION SOUND
+========================= */
+function playDoneSound(isError = false) {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.9, ctx.currentTime);
+        masterGain.connect(ctx.destination);
+
+        // Three-tone chime: low → mid → high (or descending for error)
+        const tones = isError
+            ? [520, 390, 260]
+            : [520, 660, 880];
+
+        tones.forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const env = ctx.createGain();
+            osc.connect(env);
+            env.connect(masterGain);
+
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime);
+
+            const start = ctx.currentTime + i * 0.18;
+            const end = start + 0.35;
+            env.gain.setValueAtTime(0, start);
+            env.gain.linearRampToValueAtTime(1.0, start + 0.02);
+            env.gain.exponentialRampToValueAtTime(0.001, end);
+
+            osc.start(start);
+            osc.stop(end);
+        });
+
+        setTimeout(() => ctx.close(), 1500);
+    } catch (e) {
+        // AudioContext unavailable — silent fallback
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadNovels();
@@ -192,6 +232,7 @@ async function refreshNovel(id) {
 
             if (s.status === 'completed' || s.status === 'error') {
                 clearInterval(poll);
+                playDoneSound(s.status === 'error');
                 btn.disabled = false;
                 btn.textContent = 'Refresh Chapters';
                 progress.style.display = 'none';
@@ -383,12 +424,14 @@ async function syncFenrir() {
 
                 if (s.status === 'completed') {
                     clearInterval(poll);
+                    playDoneSound(false);
                     btn.disabled = false;
                     btn.textContent = 'Sync Novels from Fenrir Realm';
                     showToast(s.message || 'Sync complete!', 'success');
                     loadNovels();
                 } else if (s.status === 'error') {
                     clearInterval(poll);
+                    playDoneSound(true);
                     btn.disabled = false;
                     btn.textContent = 'Sync Novels from Fenrir Realm';
                     progress.style.display = 'none';

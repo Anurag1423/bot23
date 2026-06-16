@@ -648,6 +648,8 @@ def submission_worker():
         try:
             novel_id, vol, ch = submission_queue.get(timeout=20)
         except Empty:
+            # Queue drained — close the browser so Chrome doesn't sit open idle.
+            browser.close()
             continue
 
         sb = None
@@ -1085,6 +1087,8 @@ def refresh(novel_id):
         except Exception as e:
             TASKS[task_id]["status"] = "error"
             TASKS[task_id]["message"] = str(e)
+        finally:
+            browser.close()
 
     threading.Thread(target=task, daemon=True).start()
     return jsonify({"task_id": task_id})
@@ -1260,6 +1264,8 @@ Promise.all(urls.map(function(url) {
             logger.error("sync-fenrir task error: %s", e)
             TASKS[task_id]["status"] = "error"
             TASKS[task_id]["message"] = str(e)
+        finally:
+            browser.close()
 
     threading.Thread(target=task, daemon=True).start()
     return jsonify({"task_id": task_id})
