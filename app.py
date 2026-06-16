@@ -1271,33 +1271,25 @@ Promise.all(urls.map(function(url) {
 
             added = 0
             skipped = 0
-            marked_missing = 0
             with app.app_context():
                 for title, nu_url in normalized:
                     sid, fenrir_url = result_map.get(nu_url, (None, None))
 
-                    # No Fenrir link found on the NU page → novel is missing from Fenrir
-                    # (DMCA removal or not yet published there). Store a slug placeholder
-                    # so the row satisfies the NOT NULL constraint, but flag as missing.
-                    novel_status = "active"
+                    # If no Fenrir URL was detected, generate a slug placeholder so the
+                    # NOT NULL constraint is satisfied. Do NOT mark as missing here —
+                    # novels haven't been checked yet. The refresh step sets missing when
+                    # it actually gets 0 chapters back from Fenrir.
                     if not fenrir_url:
                         slug = title_to_fenrir_slug(title)
                         fenrir_url = f"https://fenrirealm.com/series/{slug}"
-                        novel_status = "missing"
-                        marked_missing += 1
 
                     existing = Novel.query.filter_by(nu_url=nu_url).first()
                     if existing:
                         if sid and not existing.nu_series_id:
                             existing.nu_series_id = sid
-                        # If we now have a real Fenrir URL and the novel was missing, reactivate.
-                        if fenrir_url and novel_status == "active":
+                        # Update Fenrir URL if we got a better (non-slug) one.
+                        if fenrir_url:
                             existing.fenrir_url = fenrir_url
-                            if (existing.status or "active") == "missing":
-                                existing.status = "active"
-                        # If still no Fenrir URL and not already marked, flag it.
-                        elif novel_status == "missing" and not existing.status:
-                            existing.status = "missing"
                         skipped += 1
                     else:
                         n = Novel(
@@ -1314,7 +1306,7 @@ Promise.all(urls.map(function(url) {
 
                 db.session.commit()
 
-            logger.info("📊 Sync: added=%d skipped=%d marked_missing=%d", added, skipped, marked_missing)
+            logger.info("📊 Sync: added=%d skipped=%d", added, skipped)
 
             TASKS[task_id]["progress"] = 100
             TASKS[task_id]["status"] = "completed"
