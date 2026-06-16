@@ -257,6 +257,14 @@ function _refreshNovelAndWait(id) {
             const { task_id } = await res.json();
 
             const poll = setInterval(async () => {
+                // Honour stop-all immediately — don't wait for the task to finish.
+                if (_stopRefreshAll) {
+                    clearInterval(poll);
+                    if (btn)  { btn.disabled = false; btn.textContent = 'refresh'; }
+                    if (prog) prog.style.display = 'none';
+                    resolve('stopped');
+                    return;
+                }
                 try {
                     const s = await fetch(`${API_BASE}/tasks/${task_id}`).then(r => r.json());
                     if (fill) fill.style.width = `${s.progress || 0}%`;
