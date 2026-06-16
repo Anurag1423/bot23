@@ -101,9 +101,11 @@ function _novelCard(novel, isMissing) {
 // Render novels list — active novels then a collapsible missing section
 function renderNovels() {
     const listEl = document.getElementById('novelsList');
+    const q = (document.getElementById('novelSearch')?.value || '').toLowerCase().trim();
 
-    const active  = novels.filter(n => (n.status || 'active') === 'active');
-    const missing = novels.filter(n => n.status === 'missing');
+    const match  = n => !q || n.name.toLowerCase().includes(q);
+    const active  = novels.filter(n => (n.status || 'active') === 'active' && match(n));
+    const missing = novels.filter(n => n.status === 'missing' && match(n));
 
     let html = '';
 

@@ -63,7 +63,10 @@
 
         <!-- Novels -->
         <section class="novels-section">
-            <h2>Tracked Novels</h2>
+            <div class="novels-header">
+                <h2>Tracked Novels</h2>
+                <input type="search" id="novelSearch" placeholder="search…" oninput="renderNovels()" autocomplete="off">
+            </div>
             <div id="novelsList">
                 <div class="loading">Loading...</div>
             </div>
