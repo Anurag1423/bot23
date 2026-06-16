@@ -295,8 +295,15 @@ async function refreshNovel(id) {
 let _stopRefreshAll = false;
 
 async function refreshAllNovels() {
-    const active = novels.filter(n => (n.status || 'active') === 'active');
-    if (active.length === 0) { showToast('No active novels to refresh.', 'info'); return; }
+    const onlyUnchecked = document.getElementById('onlyUnchecked')?.checked;
+    const active = novels.filter(n =>
+        (n.status || 'active') === 'active' &&
+        (!onlyUnchecked || !n.last_checked)
+    );
+    if (active.length === 0) {
+        showToast(onlyUnchecked ? 'All novels have been checked before.' : 'No active novels to refresh.', 'info');
+        return;
+    }
 
     _stopRefreshAll = false;
 

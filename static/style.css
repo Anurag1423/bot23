@@ -206,6 +206,25 @@ section > h2 {
     gap: 10px;
 }
 
+.check-label {
+    font-size: 11px;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.check-label:hover {
+    color: var(--text);
+}
+
+.check-label input[type="checkbox"] {
+    accent-color: var(--text);
+    cursor: pointer;
+}
+
 .refresh-all-status {
     font-size: 11px;
     color: var(--muted);
