@@ -537,6 +537,60 @@ def crawl_nu_chapters(sb, url, group_id=None):
     return chapters
 
 
+def title_to_fenrir_slug(title):
+    """Convert a novel title to the Fenrir Realm URL slug format."""
+    import unicodedata
+    # Normalize unicode (e.g. accented chars → ASCII equivalents where possible)
+    t = unicodedata.normalize("NFKD", title)
+    t = t.encode("ascii", "ignore").decode("ascii")
+    t = t.lower()
+    # Replace anything that's not alphanumeric or space with a space
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    # Collapse whitespace to single hyphens
+    t = re.sub(r"\s+", "-", t.strip())
+    # Collapse multiple hyphens
+    t = re.sub(r"-{2,}", "-", t)
+    return t.strip("-")
+
+
+def extract_nu_series_id(sb):
+    """Extract the NovelUpdates numeric series ID from the current page."""
+    # 1. Try hidden #mypostid input
+    try:
+        val = sb.get_attribute("input#mypostid", "value")
+        if val and str(val).strip().isdigit():
+            return str(val).strip()
+    except Exception:
+        pass
+
+    # 2. Fallback: body class postid-XXXXX
+    try:
+        body_class = sb.execute_script("return document.body ? document.body.className : '';") or ""
+        m = re.search(r"\bpostid-(\d+)\b", body_class)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+
+    # 3. Last resort: raw page source patterns
+    try:
+        source = sb.get_page_source() or ""
+        patterns = [
+            r'id="mypostid"\s+value="(\d+)"',
+            r"\bpostid-(\d+)\b",
+            r"\bseries_id['\"]?\s*[:=]\s*['\"]?(\d+)",
+            r"\bpost_id['\"]?\s*[:=]\s*['\"]?(\d+)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, source, re.IGNORECASE)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+
+    return None
+
+
 def compute_missing(novel):
     f = set(tuple(x) for x in json.loads(novel.fenrir_chapters or "[]"))
     n = set(tuple(x) for x in json.loads(novel.nu_chapters or "[]"))
@@ -993,6 +1047,106 @@ def task_status(task_id):
     if not t:
         return jsonify({"status": "error", "message": "Task not found"}), 404
     return jsonify(t)
+
+
+@app.route("/api/sync-fenrir", methods=["POST"])
+def sync_fenrir():
+    """Scrape NU's Fenrir Realm group page, build Fenrir URLs, extract series IDs, upsert novels."""
+    task_id = uuid.uuid4().hex
+    TASKS[task_id] = {"status": "running", "progress": 0, "message": "Starting sync..."}
+
+    def task():
+        try:
+            sb = browser.get_sb()
+
+            # ── Step 1: Load the Fenrir Realm group page on NU ──
+            TASKS[task_id]["message"] = "Loading Fenrir Realm group page..."
+            TASKS[task_id]["progress"] = 5
+            group_url = "https://www.novelupdates.com/group/fenrir-realm/"
+            fast_open(sb, group_url, timeout_seconds=15)
+            time.sleep(3)
+
+            # ── Step 2: Extract novels from the hidden <select id="grouplst"> ──
+            records = []
+            try:
+                options = sb.find_elements("select#grouplst option")
+                for opt in options:
+                    title = (sb.execute_script("return arguments[0].textContent;", opt) or "").strip()
+                    nu_url = (opt.get_attribute("value") or "").strip()
+                    if title and title != "---" and nu_url and nu_url != "---":
+                        records.append((title, nu_url))
+            except Exception as e:
+                logger.warning("grouplst parse failed: %s", e)
+
+            if not records:
+                TASKS[task_id]["status"] = "error"
+                TASKS[task_id]["message"] = "No novels found on group page (Cloudflare or layout change?)"
+                return
+
+            total = len(records)
+            logger.info("📋 Found %d novels on Fenrir Realm group page", total)
+            TASKS[task_id]["message"] = f"Found {total} novels. Fetching series IDs..."
+            TASKS[task_id]["progress"] = 10
+
+            added = 0
+            skipped = 0
+
+            for idx, (title, nu_url) in enumerate(records):
+                pct = 10 + int(85 * (idx / total))
+                TASKS[task_id]["progress"] = pct
+                TASKS[task_id]["message"] = f"Processing {idx + 1}/{total}: {title}"
+
+                # Build Fenrir URL from title slug
+                slug = title_to_fenrir_slug(title)
+                fenrir_url = f"https://fenrirealm.com/series/{slug}"
+
+                # Normalise the NU URL to ensure it's absolute
+                if nu_url.startswith("/"):
+                    nu_url = "https://www.novelupdates.com" + nu_url
+
+                # Visit NU novel page to extract series ID
+                series_id = None
+                try:
+                    fast_open(sb, nu_url, timeout_seconds=10)
+                    time.sleep(1.5)
+                    series_id = extract_nu_series_id(sb)
+                except Exception as e:
+                    logger.warning("Could not get series ID for %r: %s", title, e)
+
+                # Upsert into DB (skip if same NU URL already exists)
+                with app.app_context():
+                    existing = Novel.query.filter_by(nu_url=nu_url).first()
+                    if existing:
+                        # Update series_id if we now have it and didn't before
+                        if series_id and not existing.nu_series_id:
+                            existing.nu_series_id = series_id
+                            db.session.commit()
+                        skipped += 1
+                    else:
+                        n = Novel(
+                            name=title,
+                            fenrir_url=fenrir_url,
+                            nu_url=nu_url,
+                            group_name="Fenrir Realm",
+                            nu_series_id=series_id,
+                            nu_group_id="78568",
+                        )
+                        db.session.add(n)
+                        db.session.commit()
+                        added += 1
+                        logger.info("✅ Added: %s | fenrir=%s | series_id=%s", title, fenrir_url, series_id)
+
+            TASKS[task_id]["progress"] = 100
+            TASKS[task_id]["status"] = "completed"
+            TASKS[task_id]["message"] = f"Done! Added {added} new, skipped {skipped} existing."
+
+        except Exception as e:
+            logger.error("sync-fenrir task error: %s", e)
+            TASKS[task_id]["status"] = "error"
+            TASKS[task_id]["message"] = str(e)
+
+    threading.Thread(target=task, daemon=True).start()
+    return jsonify({"task_id": task_id})
 
 
 @app.route("/api/novels/<int:novel_id>/missing")

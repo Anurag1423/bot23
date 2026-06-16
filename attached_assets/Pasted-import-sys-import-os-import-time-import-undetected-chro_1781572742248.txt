@@ -1,0 +1,66 @@
+import sys
+import os
+import time
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# Hide the harmless WinError 6 bug on Python 3.13 teardown
+sys.stderr = open(os.devnull, 'w')
+
+def scrape_novels_with_links():
+    print("Starting browser...")
+    options = uc.ChromeOptions()
+    driver = uc.Chrome(options=options)
+
+    url = "https://www.novelupdates.com/group/fenrir-realm/"
+    print(f"Navigating to {url}...")
+    driver.get(url)
+
+    try:
+        print("Waiting for page to load...")
+        time.sleep(5) # Brief pause for Cloudflare
+
+        # Wait until the hidden <select> tag with id="grouplst" is present
+        select_menu = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.ID, "grouplst"))
+        )
+
+        # Find all the <option> tags inside that hidden menu
+        options_list = select_menu.find_elements(By.TAG_NAME, "option")
+        
+        records = []
+        for option in options_list:
+            # Force read the hidden text content and the value attribute (URL)
+            title = option.get_attribute("textContent").strip()
+            link = option.get_attribute("value").strip()
+            
+            # Filter out the empty "---" placeholder
+            if title and title != "---" and link and link != "---":
+                records.append(f"{title} | {link}")
+
+        print(f"\nSuccess! Found {len(records)} novels with links.")
+
+        # Save the results to a text file
+        filename = "fenrir_realm_novels_with_links.txt"
+        with open(filename, "w", encoding="utf-8") as file:
+            for record in records:
+                file.write(record + "\n")
+                
+        print(f"List with links saved to {filename}")
+
+    except Exception as e:
+        print("\nAn error occurred.")
+        print(f"Error details: {e}")
+
+    finally:
+        # Clean shutdown
+        time.sleep(1)
+        try:
+            driver.quit()
+        except:
+            pass
+
+if __name__ == "__main__":
+    scrape_novels_with_links()

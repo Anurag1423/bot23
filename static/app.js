@@ -356,6 +356,62 @@ async function viewMissing(novelId) {
     }
 }
 /* =========================
+   SYNC FROM FENRIR REALM
+========================= */
+
+async function syncFenrir() {
+    const btn = document.getElementById('syncBtn');
+    const progress = document.getElementById('syncProgress');
+    const fill = document.getElementById('syncProgressFill');
+    const text = document.getElementById('syncProgressText');
+
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    progress.style.display = 'block';
+    fill.style.width = '0%';
+    text.textContent = 'Starting...';
+
+    try {
+        const res = await fetch('/api/sync-fenrir', { method: 'POST' });
+        const { task_id } = await res.json();
+
+        const poll = setInterval(async () => {
+            try {
+                const s = await fetch(`/api/tasks/${task_id}`).then(r => r.json());
+                fill.style.width = `${s.progress || 0}%`;
+                text.textContent = s.message || '';
+
+                if (s.status === 'completed') {
+                    clearInterval(poll);
+                    btn.disabled = false;
+                    btn.textContent = 'Sync Novels from Fenrir Realm';
+                    showToast(s.message || 'Sync complete!', 'success');
+                    loadNovels();
+                } else if (s.status === 'error') {
+                    clearInterval(poll);
+                    btn.disabled = false;
+                    btn.textContent = 'Sync Novels from Fenrir Realm';
+                    progress.style.display = 'none';
+                    showToast('Sync error: ' + s.message, 'error');
+                }
+            } catch (err) {
+                clearInterval(poll);
+                btn.disabled = false;
+                btn.textContent = 'Sync Novels from Fenrir Realm';
+                progress.style.display = 'none';
+                showToast('Polling error: ' + err.message, 'error');
+            }
+        }, 1500);
+
+    } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Sync Novels from Fenrir Realm';
+        progress.style.display = 'none';
+        showToast('Failed to start sync: ' + err.message, 'error');
+    }
+}
+
+/* =========================
    UTILS
 ========================= */
 

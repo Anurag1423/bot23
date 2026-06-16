@@ -49,6 +49,19 @@
             </form>
         </section>
 
+        <!-- Sync from Fenrir Realm -->
+        <section class="card" style="margin-bottom:1.5rem;">
+            <h2>Sync from Fenrir Realm</h2>
+            <p style="color:var(--text-muted);margin-bottom:1rem;">Automatically import all novels from the Fenrir Realm group on NovelUpdates, build their Fenrir URLs, and fetch their series IDs.</p>
+            <button id="syncBtn" class="btn btn-primary" onclick="syncFenrir()">Sync Novels from Fenrir Realm</button>
+            <div id="syncProgress" style="display:none;margin-top:14px;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="syncProgressFill"></div>
+                </div>
+                <div id="syncProgressText" class="progress-text"></div>
+            </div>
+        </section>
+
         <!-- Novels List -->
         <section class="novels-section">
             <h2>Watched Novels</h2>
