@@ -1125,7 +1125,8 @@ def sync_fenrir():
             TASKS[task_id]["message"] = f"Found {total} novels. Fetching series IDs in parallel..."
             TASKS[task_id]["progress"] = 8
 
-            series_id_map = {}
+            # Maps nu_url -> (series_id, fenrir_url)
+            result_map = {}
             done_count = 0
             lock = threading.Lock()
 
@@ -1135,37 +1136,51 @@ def sync_fenrir():
                 re.compile(r"\bseries_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
                 re.compile(r"\bpost_id['\"]?\s*[:=]\s*['\"]?(\d+)", re.IGNORECASE),
             ]
+            # Match any fenrirealm.com/series/<slug> link; capture the slug
+            _fenrir_pat = re.compile(
+                r'https?://(?:www\.)?fenrirealm\.com/series/([a-z0-9][a-z0-9\-]*[a-z0-9])',
+                re.IGNORECASE,
+            )
 
-            def fetch_series_id(args):
+            def fetch_novel_info(args):
                 nonlocal done_count
                 title, nu_url = args
                 sid = None
+                fenrir_url = None
                 try:
                     resp = req_lib.get(
                         nu_url, cookies=cookies, headers=headers,
                         timeout=12, allow_redirects=True,
                     )
                     html = resp.text
+
+                    # Series ID
                     for pat in _sid_patterns:
                         m = pat.search(html)
                         if m:
                             sid = m.group(1)
                             break
+
+                    # Fenrir URL — take the first fenrirealm.com/series/<slug> link
+                    fm = _fenrir_pat.search(html)
+                    if fm:
+                        fenrir_url = f"https://fenrirealm.com/series/{fm.group(1).lower()}"
+
                 except Exception:
                     pass
 
                 with lock:
                     done_count += 1
-                    series_id_map[nu_url] = sid
+                    result_map[nu_url] = (sid, fenrir_url)
                     if done_count % 30 == 0 or done_count == total:
                         pct = 8 + int(72 * (done_count / total))
                         TASKS[task_id]["progress"] = pct
-                        TASKS[task_id]["message"] = f"Fetching series IDs… {done_count}/{total}"
+                        TASKS[task_id]["message"] = f"Fetching info… {done_count}/{total}"
 
-                return nu_url, sid
+                return nu_url, sid, fenrir_url
 
             with ThreadPoolExecutor(max_workers=15) as executor:
-                list(executor.map(fetch_series_id, normalized))
+                list(executor.map(fetch_novel_info, normalized))
 
             # ── Step 5: Upsert all novels into DB ──
             TASKS[task_id]["message"] = "Saving to database..."
@@ -1173,16 +1188,23 @@ def sync_fenrir():
 
             added = 0
             skipped = 0
+            no_fenrir = 0
             with app.app_context():
                 for title, nu_url in normalized:
-                    sid = series_id_map.get(nu_url)
-                    slug = title_to_fenrir_slug(title)
-                    fenrir_url = f"https://fenrirealm.com/series/{slug}"
+                    sid, fenrir_url = result_map.get(nu_url, (None, None))
+
+                    # Fallback to slug only if no real URL found on NU page
+                    if not fenrir_url:
+                        slug = title_to_fenrir_slug(title)
+                        fenrir_url = f"https://fenrirealm.com/series/{slug}"
+                        no_fenrir += 1
 
                     existing = Novel.query.filter_by(nu_url=nu_url).first()
                     if existing:
                         if sid and not existing.nu_series_id:
                             existing.nu_series_id = sid
+                        if fenrir_url and not existing.fenrir_url:
+                            existing.fenrir_url = fenrir_url
                         skipped += 1
                     else:
                         n = Novel(
@@ -1197,6 +1219,8 @@ def sync_fenrir():
                         added += 1
 
                 db.session.commit()
+
+            logger.info("📊 Sync: added=%d skipped=%d no_fenrir_link=%d", added, skipped, no_fenrir)
 
             TASKS[task_id]["progress"] = 100
             TASKS[task_id]["status"] = "completed"
